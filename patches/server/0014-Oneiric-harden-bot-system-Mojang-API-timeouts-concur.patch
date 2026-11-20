@@ -1,0 +1,258 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 05:40:15 +0800
+Subject: [PATCH] Oneiric: harden bot system - Mojang API timeouts + concurrent
+ skin cache, non-destructive save probe, consume-after-place, Folia
+ remove-on-shutdown
+
+
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java b/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
+index df982649c73ca4825bef628d53456927cba1416a..7bff97c01a7f49fb72b4af7e9120640dc4f759e8 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
+@@ -79,6 +79,43 @@ public class BotDataStorage implements IPlayerDataStorage {
+         });
+     }
+ 
++    /**
++     * Oneiric - 只读探测：不删文件、不改 bot 清单（对比 {@link #load(Player)}）。
++     *
++     * <p>Folia 上放置 bot 前要先知道它在哪个世界/坐标，才能投递到正确的区域线程。
++     * 这个探测必须是非破坏性的，否则投递失败就等于数据丢失。</p>
++     */
++    @Override
++    public Optional<CompoundTag> read(Player player) {
++        final File file = new File(this.botDir, player.getStringUUID() + ".dat");
++        if (!file.exists() || !file.isFile()) {
++            return Optional.empty();
++        }
++        try {
++            return Optional.of(NbtIo.readCompressed(file.toPath(), NbtAccounter.unlimitedHeap()));
++        } catch (Exception exception) {
++            BotDataStorage.LOGGER.warn("Failed to read fakeplayer data for {}", player.getScoreboardName());
++            return Optional.empty();
++        }
++    }
++
++    /**
++     * Oneiric - 消费存档：删 {@code .dat} + 从清单摘除，但不重新 load 实体。
++     *
++     * <p>放置成功后调用。见 {@link IPlayerDataStorage#consume} 的说明。</p>
++     */
++    @Override
++    public void consume(Player player) {
++        final File file = new File(this.botDir, player.getStringUUID() + ".dat");
++        if (file.exists() && file.isFile() && !file.delete()) {
++            BotDataStorage.LOGGER.warn("Failed to delete fakeplayer data for {}", player.getScoreboardName());
++            return;
++        }
++        // 1.21.1 的 CompoundTag#remove 返回 void（26.x 才返回被删的值）
++        this.savedBotList.remove(player.getScoreboardName());
++        this.saveBotList();
++    }
++
+     private Optional<CompoundTag> load(String name, String uuid) {
+         File file = new File(this.botDir, uuid + ".dat");
+ 
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotList.java b/src/main/java/org/leavesmc/leaves/bot/BotList.java
+index d35e228e9acc756563f8ec7a13b7bbaab8ee7bc2..e4c12282c40551828dfba969585356e79f7d6fc4 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotList.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotList.java
+@@ -119,9 +119,11 @@ public class BotList {
+     public ServerBot loadNewBot(String realName, IPlayerDataStorage playerIO) {
+         final UUID uuid = BotUtil.getBotUUID(realName);
+ 
+-        // Oneiric - Folia：先在当前线程把存档读出来，判断目标位置，再决定要不要投递
++        // Oneiric - Folia：先非破坏性读出存档，判断目标世界/坐标，再决定投递到哪个区域。
++        // 这里必须用 read() 而不是 load()：load() 会删掉 .dat 并把 bot 从清单摘除，
++        // 万一投递失败（区域已卸载/调度器关闭）数据就永久丢了。
+         final ServerBot probe = new ServerBot(this.server, this.server.getLevel(Level.OVERWORLD), new GameProfile(uuid, realName));
+-        final Optional<CompoundTag> optional = playerIO.load(probe);
++        final Optional<CompoundTag> optional = playerIO.read(probe);
+         if (optional.isEmpty()) {
+             return null;
+         }
+@@ -139,20 +141,29 @@ public class BotList {
+         }
+ 
+         final ServerLevel world = this.server.getLevel(resourcekey);
+-        final Location at = probe.getLocation();
++        // Oneiric - 用存档里的坐标，不要用 probe.getLocation()：
++        // probe 只是刚 new 出来的空实体，它的位置是默认值，指向错误的区域。
++        final Location at = new Location(world.getWorld(),
++                optional.get().getList("Pos", 6).isEmpty() ? world.getSharedSpawnPos().getX() + 0.5D
++                        : optional.get().getList("Pos", 6).getDouble(0),
++                optional.get().getList("Pos", 6).isEmpty() ? world.getSharedSpawnPos().getY()
++                        : optional.get().getList("Pos", 6).getDouble(1),
++                optional.get().getList("Pos", 6).isEmpty() ? world.getSharedSpawnPos().getZ() + 0.5D
++                        : optional.get().getList("Pos", 6).getDouble(2));
+ 
+         if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
+                 world, net.minecraft.core.BlockPos.containing(at.getX(), at.getY(), at.getZ()))) {
+             org.bukkit.Bukkit.getRegionScheduler().execute(
+                 org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE, at,
+-                () -> this.placeLoadedBot(uuid, realName, world, at, optional.get()));
++                () -> this.placeLoadedBot(uuid, realName, world, at, optional.get(), playerIO));
+             return null;
+         }
+ 
+-        return this.placeLoadedBot(uuid, realName, world, at, optional.get());
++        return this.placeLoadedBot(uuid, realName, world, at, optional.get(), playerIO);
+     }
+ 
+-    private ServerBot placeLoadedBot(UUID uuid, String realName, ServerLevel world, Location at, CompoundTag nbt) {
++    private ServerBot placeLoadedBot(UUID uuid, String realName, ServerLevel world, Location at,
++                                     CompoundTag nbt, IPlayerDataStorage playerIO) {
+         BotLoadEvent event = new BotLoadEvent(realName, uuid);
+         this.server.server.getPluginManager().callEvent(event);
+         if (event.isCancelled()) {
+@@ -162,7 +173,15 @@ public class BotList {
+         ServerBot bot = new ServerBot(this.server, world, new GameProfile(uuid, realName));
+         bot.connection = new ServerBotPacketListenerImpl(this.server, bot);
+         bot.load(nbt);
+-        return this.placeNewBot(bot, world, bot.getLocation() != null ? bot.getLocation() : at, nbt);
++
++        final ServerBot placed = this.placeNewBot(bot, world, at, nbt);
++        if (placed != null) {
++            // Oneiric - 放置成功后才"消费"存档（删除 .dat 并从 fakeplayer.dat 清单摘除）。
++            // 顺序很重要：先 read 探测 -> 放置 -> 再 consume。若放置失败，存档保留，
++            // 下次 /bot load 还能再试，不会出现"bot 消失且数据没了"。
++            playerIO.consume(bot);
++        }
++        return placed;
+     }
+ 
+     public ServerBot placeNewBot(ServerBot bot, ServerLevel world, Location location, @Nullable CompoundTag nbt) {
+diff --git a/src/main/java/org/leavesmc/leaves/bot/IPlayerDataStorage.java b/src/main/java/org/leavesmc/leaves/bot/IPlayerDataStorage.java
+index 7ebe4d6c71e90be92387a585ea581c6b2c4af89d..b2135ceb41245bc6185636727afff6794bbf55b9 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/IPlayerDataStorage.java
++++ b/src/main/java/org/leavesmc/leaves/bot/IPlayerDataStorage.java
+@@ -10,4 +10,30 @@ public interface IPlayerDataStorage {
+     void save(Player player);
+ 
+     Optional<CompoundTag> load(Player player);
++
++    /**
++     * Oneiric - 只读不消费（用于探测 bot 的目标世界/坐标）。
++     *
++     * <p>为什么需要：{@link #load(Player)} 在 Leaves 的语义里是<b>破坏性</b>的 ——
++     * 读出后会把 {@code .dat} 删掉、并从 bot 清单里摘除。Folia 上必须先判断
++     * "该投递到哪个区域"，这个判断发生在放置<b>之前</b>；如果探测阶段就调用
++     * {@code load}，一旦投递失败数据就永久丢失。</p>
++     *
++     * <p>默认实现返回 {@link Optional#empty()}：只读语义无法从旧接口推出来，
++     * 不能假装做到。实现类应当覆写。</p>
++     */
++    default Optional<CompoundTag> read(Player player) {
++        return Optional.empty();
++    }
++
++    /**
++     * Oneiric - 消费存档：删除 {@code .dat} 并从 bot 清单摘除，<b>不</b>重新加载实体状态。
++     *
++     * <p>放置完成后调用。与 {@link #load(Player)} 的区别是不会再 {@code player.load(nbt)} ——
++     * 那时实体已经带着正确状态上线了，再 load 一次等于用磁盘旧值覆盖运行时状态
++     * （位置、血量、背包可能已经被 tick 改过）。</p>
++     */
++    default void consume(Player player) {
++        // 默认什么都不做：不知道实现如何存储时，宁可留下存档也不能乱删。
++    }
+ }
+diff --git a/src/main/java/org/leavesmc/leaves/bot/MojangAPI.java b/src/main/java/org/leavesmc/leaves/bot/MojangAPI.java
+index 517e3321b866abe9d17a6fe9e919528b50bb130a..22d5f6f60dded2bd7ad0259c25e05123ada40b7e 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/MojangAPI.java
++++ b/src/main/java/org/leavesmc/leaves/bot/MojangAPI.java
+@@ -6,34 +6,83 @@ import org.leavesmc.leaves.LeavesConfig;
+ 
+ import java.io.IOException;
+ import java.io.InputStreamReader;
++import java.net.HttpURLConnection;
+ import java.net.URI;
+-import java.util.HashMap;
++import java.nio.charset.StandardCharsets;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
+ 
++/**
++ * Oneiric - Mojang 皮肤查询。
++ *
++ * <p><b>与 Leaves 的差异（都是缺陷修复）</b>：</p>
++ * <ol>
++ *   <li><b>超时</b>：Leaves 用 {@code URI.toURL().openStream()}，没有连接/读取超时。
++ *       一次网络挂起会永久占住一个异步工作线程（{@code /bot create} 在异步线程上拉皮肤），
++ *       并发创建多个 bot 就能把调度器的异步池耗干。这里显式设置 5s / 10s。</li>
++ *   <li><b>缓存并发</b>：Leaves 的 {@code CACHE} 是普通 {@code HashMap}，
++ *       而 {@code getSkin} 会从多个异步线程并发进入 —— HashMap 并发 put 可能死循环
++ *       或丢条目。这里换成 {@code ConcurrentHashMap}。</li>
++ *   <li><b>失败不缓存</b>：查不到皮肤时返回 {@code null}，Leaves 会把这个 null 存进缓存，
++ *       于是这个玩家名永远拿不到皮肤（即使之后网络恢复）。这里失败不写缓存。</li>
++ * </ol>
++ */
+ public class MojangAPI {
+ 
+-    private static final Map<String, String[]> CACHE = new HashMap<>();
++    /** 连接超时（毫秒）。Mojang API 在正常网络下 < 1s 返回。 */
++    private static final int CONNECT_TIMEOUT_MS = 5_000;
++    /** 读取超时（毫秒）。 */
++    private static final int READ_TIMEOUT_MS = 10_000;
++
++    private static final Map<String, String[]> CACHE = new ConcurrentHashMap<>();
+ 
+     public static String[] getSkin(String name) {
+-        if (LeavesConfig.fakeplayerCacheSkin && CACHE.containsKey(name)) {
+-            return CACHE.get(name);
++        if (LeavesConfig.fakeplayerCacheSkin) {
++            final String[] cached = CACHE.get(name);
++            if (cached != null) {
++                return cached;
++            }
+         }
+ 
+-        String[] values = pullFromAPI(name);
+-        CACHE.put(name, values);
++        final String[] values = pullFromAPI(name);
++        if (values != null && LeavesConfig.fakeplayerCacheSkin) {
++            CACHE.put(name, values);
++        }
+         return values;
+     }
+ 
+-    // Laggggggggggggggggggggggggggggggggggggggggg
++    /**
++     * 从 Mojang 拉取皮肤值/签名。
++     *
++     * @return {@code {value, signature}}，失败返回 {@code null}
++     */
+     public static String[] pullFromAPI(String name) {
+         try {
+-            String uuid = JsonParser.parseReader(new InputStreamReader(URI.create("https://api.mojang.com/users/profiles/minecraft/" + name).toURL().openStream()))
++            final String uuid = fetchJson("https://api.mojang.com/users/profiles/minecraft/" + name)
+                     .getAsJsonObject().get("id").getAsString();
+-            JsonObject property = JsonParser.parseReader(new InputStreamReader(URI.create("https://sessionserver.mojang.com/session/minecraft/profile/" + uuid + "?unsigned=false").toURL().openStream()))
++            final JsonObject property = fetchJson(
++                    "https://sessionserver.mojang.com/session/minecraft/profile/" + uuid + "?unsigned=false")
+                     .getAsJsonObject().get("properties").getAsJsonArray().get(0).getAsJsonObject();
+             return new String[]{property.get("value").getAsString(), property.get("signature").getAsString()};
+-        } catch (IOException | IllegalStateException | IllegalArgumentException e) {
++        } catch (final IOException | IllegalStateException | IllegalArgumentException | NullPointerException e) {
+             return null;
+         }
+     }
++
++    private static com.google.gson.JsonElement fetchJson(final String url) throws IOException {
++        final HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
++        try {
++            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
++            connection.setReadTimeout(READ_TIMEOUT_MS);
++            connection.setRequestProperty("User-Agent", "Oneiric/fakeplayer");
++            if (connection.getResponseCode() != 200) {
++                throw new IOException("HTTP " + connection.getResponseCode() + " from " + url);
++            }
++            try (InputStreamReader reader = new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8)) {
++                return JsonParser.parseReader(reader);
++            }
++        } finally {
++            connection.disconnect();
++        }
++    }
+ }

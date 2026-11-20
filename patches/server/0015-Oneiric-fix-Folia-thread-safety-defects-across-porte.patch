@@ -1,0 +1,976 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 06:36:49 +0800
+Subject: [PATCH] Oneiric: fix Folia thread-safety defects across ported code
+
+
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotCommand.java b/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
+index b13ad53faa53870cd74c5f9fb9e1f1686288d457..8bfe63288d55410815bb47782d2027aaa712c1a4 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
+@@ -250,8 +250,7 @@ public class BotCommand extends Command {
+                     sender.sendMessage(text("This fakeplayer is not scheduled to be removed", NamedTextColor.RED));
+                     return;
+                 }
+-                Bukkit.getScheduler().cancelTask(bot.removeTaskId);
+-                bot.removeTaskId = -1;
++                cancelRemoveTask(bot);
+                 sender.sendMessage(text("Remove cancel"));
+                 return;
+             }
+@@ -289,12 +288,13 @@ public class BotCommand extends Command {
+             boolean isReschedule = bot.removeTaskId != -1;
+ 
+             if (isReschedule) {
+-                Bukkit.getScheduler().cancelTask(bot.removeTaskId);
++                cancelRemoveTask(bot);
+             }
+-            bot.removeTaskId = Bukkit.getScheduler().runTaskLater(MinecraftInternalPlugin.INSTANCE, () -> {
+-                bot.removeTaskId = -1;
+-                botList.removeBot(bot, BotRemoveEvent.RemoveReason.COMMAND, sender, false);
+-            }, time).getTaskId();
++            // Oneiric - 与 Leaves 的差异：Leaves 用 Bukkit.getScheduler().runTaskLater，
++            // 那在 Folia 上由**全局线程**执行，回调里再去动 bot 状态就是跨区写，
++            // 且 removeTaskId 变成全局线程写、区域线程读的普通 int。
++            // 这里改用 bot 所属区域的调度器，回调直接落在正确的线程上。
++            bot.removeTaskId = scheduleRemove(bot, botList, sender, time);
+ 
+             sender.sendMessage("This fakeplayer will be removed in " + h + "h " + m + "m " + s + "s" + (isReschedule ? " (rescheduled)" : ""));
+ 
+@@ -304,6 +304,53 @@ public class BotCommand extends Command {
+         botList.removeBot(bot, BotRemoveEvent.RemoveReason.COMMAND, sender, false);
+     }
+ 
++    /**
++     * Oneiric - 在 bot 所属区域线程上排定"延迟移除"。
++     *
++     * <p>返回值和 {@code removeTaskId} 的语义沿用 Leaves 的 {@code int}（-1 = 无任务），
++     * 但内部持有的是 Folia 的 {@link io.papermc.paper.threadedregions.scheduler.ScheduledTask}。用一个
++     * 自增 id 映射到任务，取消时按 id 找回 —— 这样字段类型不用改，Leaves 的
++     * 检查点（{@code == -1}）也全都继续成立。</p>
++     */
++    private static final Map<Integer, io.papermc.paper.threadedregions.scheduler.ScheduledTask> REMOVE_TASKS =
++            new java.util.concurrent.ConcurrentHashMap<>();
++    private static final java.util.concurrent.atomic.AtomicInteger REMOVE_TASK_IDS =
++            new java.util.concurrent.atomic.AtomicInteger();
++
++    private static int scheduleRemove(ServerBot bot, BotList botList, CommandSender sender, long delayTicks) {
++        final int id = REMOVE_TASK_IDS.incrementAndGet();
++        final io.papermc.paper.threadedregions.scheduler.ScheduledTask task = Bukkit.getRegionScheduler().runDelayed(
++            MinecraftInternalPlugin.INSTANCE, bot.getLocation(), t -> {
++                REMOVE_TASKS.remove(id);
++                bot.removeTaskId = -1;
++                botList.removeBot(bot, BotRemoveEvent.RemoveReason.COMMAND, sender, false);
++            }, Math.max(1L, delayTicks));
++        REMOVE_TASKS.put(id, task);
++        return id;
++    }
++
++    private static void cancelRemoveTask(ServerBot bot) {
++        cancelScheduledRemoval(bot);
++    }
++
++    /**
++     * Oneiric - 取消 bot 的"定时移除"，供 {@link BotList#removeBot} 复用。
++     *
++     * <p>{@code removeTaskId} 的 id 是我们自己发的，任务对象在 {@link #REMOVE_TASKS} 里；
++     * 不能用 {@code Bukkit.getScheduler().cancelTask(id)} —— 那是另一套 id 空间。</p>
++     */
++    public static void cancelScheduledRemoval(ServerBot bot) {
++        final int id = bot.removeTaskId;
++        if (id == -1) {
++            return;
++        }
++        final io.papermc.paper.threadedregions.scheduler.ScheduledTask task = REMOVE_TASKS.remove(id);
++        if (task != null) {
++            task.cancel();
++        }
++        bot.removeTaskId = -1;
++    }
++
+     private void onAction(CommandSender sender, String @NotNull [] args) {
+         if (!LeavesConfig.fakeplayerUseAction) {
+             return;
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java b/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
+index ebb3aa94718382e8fac2a8fa617c796a9387709b..c9a20829974b444c0312304da5a340795c287c7e 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
+@@ -99,14 +99,29 @@ public record BotCreateState(String realName, String name, String skinName, Stri
+         }
+ 
+         public void spawnWithSkin(Consumer<Bot> consumer) {
++            // 拉皮肤是网络 I/O，必须在异步线程做（否则会卡住调用它的区域线程）
+             Bukkit.getScheduler().runTaskAsynchronously(MinecraftInternalPlugin.INSTANCE, () -> {
+                 this.mojangAPISkin();
+-                Bukkit.getScheduler().runTask(MinecraftInternalPlugin.INSTANCE, () -> {
+-                    CraftBot bot = this.spawn();
+-                    if (bot != null && consumer != null) {
+-                        consumer.accept(bot);
+-                    }
+-                });
++                // Oneiric - 与 Leaves 的差异：Leaves 这里用 Bukkit.getScheduler().runTask()，
++                // 那是全局线程；然后 createNewBot 发现自己不在目标区域、投递后返回 null，
++                // 于是 consumer 永远不会被调用。
++                //
++                // 这里直接投递到目标位置所属的区域线程：spawn() 会在正确的线程上完成，
++                // 返回值就是真正的 bot，consumer 才真的能收到回调。
++                final Location at = this.location;
++                if (at == null) {
++                    return;
++                }
++                try {
++                    Bukkit.getRegionScheduler().execute(MinecraftInternalPlugin.INSTANCE, at, () -> {
++                        final CraftBot bot = this.spawn();
++                        if (bot != null && consumer != null) {
++                            consumer.accept(bot);
++                        }
++                    });
++                } catch (final RuntimeException rejected) {
++                    org.leavesmc.leaves.LeavesLogger.LOGGER.warn("Failed to schedule bot spawn at " + at, rejected);
++                }
+             });
+         }
+ 
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java b/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
+index 7bff97c01a7f49fb72b4af7e9120640dc4f759e8..90faeaa1513a8aa8ae52f2eda75ead286efc67a0 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotDataStorage.java
+@@ -66,8 +66,13 @@ public class BotDataStorage implements IPlayerDataStorage {
+             nbt.putString("name", bot.createState.name());
+             nbt.putUUID("uuid", bot.getUUID());
+             nbt.putBoolean("resume", bot.resume);
+-            this.savedBotList.put(bot.createState.realName(), nbt);
+-            this.saveBotList();
++            // Oneiric - 两个 bot 可能在不同区域线程上同时保存（各自由自己的 removeBot 触发）。
++            // savedBotList 是普通 CompoundTag(HashMap)，且 saveBotList 会 delete+create 同一个
++            // fakeplayer.dat：必须整体串行，否则清单会被写坏/写丢。
++            synchronized (this) {
++                this.savedBotList.put(bot.createState.realName(), nbt);
++                this.saveBotList();
++            }
+         }
+     }
+ 
+@@ -106,14 +111,16 @@ public class BotDataStorage implements IPlayerDataStorage {
+      */
+     @Override
+     public void consume(Player player) {
+-        final File file = new File(this.botDir, player.getStringUUID() + ".dat");
+-        if (file.exists() && file.isFile() && !file.delete()) {
+-            BotDataStorage.LOGGER.warn("Failed to delete fakeplayer data for {}", player.getScoreboardName());
+-            return;
++        synchronized (this) {
++            final File file = new File(this.botDir, player.getStringUUID() + ".dat");
++            if (file.exists() && file.isFile() && !file.delete()) {
++                BotDataStorage.LOGGER.warn("Failed to delete fakeplayer data for {}", player.getScoreboardName());
++                return;
++            }
++            // 1.21.1 的 CompoundTag#remove 返回 void（26.x 才返回被删的值）
++            this.savedBotList.remove(player.getScoreboardName());
++            this.saveBotList();
+         }
+-        // 1.21.1 的 CompoundTag#remove 返回 void（26.x 才返回被删的值）
+-        this.savedBotList.remove(player.getScoreboardName());
+-        this.saveBotList();
+     }
+ 
+     private Optional<CompoundTag> load(String name, String uuid) {
+@@ -122,11 +129,13 @@ public class BotDataStorage implements IPlayerDataStorage {
+         if (file.exists() && file.isFile()) {
+             try {
+                 Optional<CompoundTag> optional = Optional.of(NbtIo.readCompressed(file.toPath(), NbtAccounter.unlimitedHeap()));
+-                if (!file.delete()) {
+-                    throw new IOException("Failed to delete fakeplayer data");
++                synchronized (this) {
++                    if (!file.delete()) {
++                        throw new IOException("Failed to delete fakeplayer data");
++                    }
++                    this.savedBotList.remove(name);
++                    this.saveBotList();
+                 }
+-                this.savedBotList.remove(name);
+-                this.saveBotList();
+                 return optional;
+             } catch (Exception exception) {
+                 BotDataStorage.LOGGER.warn("Failed to load fakeplayer data for {}", name);
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotList.java b/src/main/java/org/leavesmc/leaves/bot/BotList.java
+index e4c12282c40551828dfba969585356e79f7d6fc4..1748de60e3db3a0571bd5dfb85d1503cd7496474 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotList.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotList.java
+@@ -50,8 +50,11 @@ public class BotList {
+     public final List<ServerBot> bots = new CopyOnWriteArrayList<>();
+     private final BotDataStorage dataStorage;
+ 
+-    private final Map<UUID, ServerBot> botsByUUID = Maps.newHashMap();
+-    private final Map<String, ServerBot> botsByName = Maps.newHashMap();
++    // Oneiric - 必须并发：plantNewBot/removeBot 在 bot 所属的区域线程上写，
++    // 而 getBotByName/getBot 会被 PlayerList（玩家加入时的区域线程）、
++    // /bot 补全、Bot API 从任意线程读。HashMap 并发扩容会丢条目或死循环。
++    private final Map<UUID, ServerBot> botsByUUID = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<String, ServerBot> botsByName = new java.util.concurrent.ConcurrentHashMap<>();
+ 
+     public BotList(MinecraftServer server) {
+         this.server = server;
+@@ -299,9 +302,10 @@ public class BotList {
+             return event.isCancelled();
+         }
+ 
++        // Oneiric - 取消"定时移除"任务。任务由 BotCommand 的区域调度器持有，
++        // 统一交给它按 id 取消（Leaves 这里直接 cancelTask，但那是全局调度器的 id）。
+         if (bot.removeTaskId != -1) {
+-            Bukkit.getScheduler().cancelTask(bot.removeTaskId);
+-            bot.removeTaskId = -1;
++            org.leavesmc.leaves.bot.BotCommand.cancelScheduledRemoval(bot);
+         }
+ 
+         if (this.server.isSameThread()) {
+diff --git a/src/main/java/org/leavesmc/leaves/bot/ServerBot.java b/src/main/java/org/leavesmc/leaves/bot/ServerBot.java
+index ffa17baedd889959203cef0c54dc40f57bc08f97..80919046983737da14967a707cdec0a9336fed82 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/ServerBot.java
++++ b/src/main/java/org/leavesmc/leaves/bot/ServerBot.java
+@@ -73,6 +73,14 @@ import java.util.function.Predicate;
+ public class ServerBot extends ServerPlayer {
+ 
+     private final Map<Configs<?>, BotConfig<?>> configs;
++    /**
++     * Oneiric - 动作列表改成写时复制。
++     *
++     * <p>Leaves 用 {@code ArrayList}：{@code /bot action} 在命令线程加、
++     * {@code doTick} 在 bot 的区域线程遍历并 {@code removeIf}。Folia 上这是两个
++     * 不同的线程，会抛 ConcurrentModificationException 或丢动作。
++     * CopyOnWrite 的写开销只发生在下达命令时（低频），读（每 tick）无锁。</p>
++     */
+     private final List<BotAction<?>> actions;
+ 
+     public boolean resume = false;
+@@ -94,7 +102,7 @@ public class ServerBot extends ServerPlayer {
+         this.entityData.set(Player.DATA_PLAYER_MODE_CUSTOMISATION, (byte) -2);
+ 
+         this.gameMode = new ServerBotGameMode(this);
+-        this.actions = new ArrayList<>();
++        this.actions = new java.util.concurrent.CopyOnWriteArrayList<>();
+ 
+         ImmutableMap.Builder<Configs<?>, BotConfig<?>> configBuilder = ImmutableMap.builder();
+         for (Configs<?> config : Configs.getConfigs()) {
+@@ -136,10 +144,22 @@ public class ServerBot extends ServerPlayer {
+         }
+ 
+         playerConnection.send(this.getAddEntityPacket(entityTracker.serverEntity));
++        final byte headYaw = (byte) ((this.getYRot() * 256f) / 360f);
+         if (login) {
+-            Bukkit.getScheduler().runTaskLater(MinecraftInternalPlugin.INSTANCE, () -> playerConnection.send(new ClientboundRotateHeadPacket(this, (byte) ((getYRot() * 256f) / 360f))), 10);
++            // Oneiric - 与 Leaves 的差异：Leaves 用 Bukkit.getScheduler().runTaskLater，
++            // 在 Folia 上那是**全局线程** 10 tick 后执行 —— 既跨区读 this.getYRot()，
++            // 又跨区写 playerConnection。改成投递到 bot 自己所属的区域线程。
++            // 同时把朝向在调度**之前**快照下来（那时还在正确的线程上），
++            // 回调里不再读实体字段。
++            try {
++                Bukkit.getRegionScheduler().runDelayed(MinecraftInternalPlugin.INSTANCE, this.getLocation(),
++                    task -> playerConnection.send(new ClientboundRotateHeadPacket(this, headYaw)), 10L);
++            } catch (final RuntimeException rejected) {
++                // 区域已卸载：跳过这次头部同步，不影响后续
++                LeavesLogger.LOGGER.debug("Failed to schedule head sync for bot {}", this.getScoreboardName());
++            }
+         } else {
+-            playerConnection.send(new ClientboundRotateHeadPacket(this, (byte) ((getYRot() * 256f) / 360f)));
++            playerConnection.send(new ClientboundRotateHeadPacket(this, headYaw));
+         }
+     }
+ 
+@@ -329,7 +349,15 @@ public class ServerBot extends ServerPlayer {
+         this.addDeltaMovement(knockback);
+         this.knockback = Vec3.ZERO;
+ 
+-        this.server.tell(this.server.wrapRunnable(this::runAction));
++        // Oneiric - 与 Leaves 的差异：Leaves 写的是
++        //   this.server.tell(this.server.wrapRunnable(this::runAction));
++        // 在 Folia 里 wrapRunnable() 和 tell() 都是"直接抛 UnsupportedOperationException"
++        // （见 MinecraftServer.java 的 Folia 段），照搬会让每个 bot 每 tick 抛一次异常、
++        // 修复前 livingEntityTick() 永远执行不到 —— bot 既不动也不跑动作。
++        //
++        // 这里直接同步调用：doTick() 本身已经保证在 bot 所属区域线程上执行
++        // （BotList.networkTick 负责亲和性判断与投递），所以不需要再绕一圈主线程队列。
++        this.runAction();
+ 
+         this.livingEntityTick();
+ 
+diff --git a/src/main/java/org/leavesmc/leaves/bot/agent/Actions.java b/src/main/java/org/leavesmc/leaves/bot/agent/Actions.java
+index a37513e1ba8443c702ab0c01fbe5e052e5f0f2ab..f7be98b546e92c15256edab51f4b3fea09618c1f 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/agent/Actions.java
++++ b/src/main/java/org/leavesmc/leaves/bot/agent/Actions.java
+@@ -12,7 +12,7 @@ import java.util.Set;
+ 
+ public class Actions {
+ 
+-    private static final Map<String, BotAction<?>> actions = new HashMap<>();
++    private static final Map<String, BotAction<?>> actions = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 插件可在任意线程注册，/bot 在区域线程读
+ 
+     public static void registerAll() {
+         register(new AttackAction());
+diff --git a/src/main/java/org/leavesmc/leaves/bot/agent/Configs.java b/src/main/java/org/leavesmc/leaves/bot/agent/Configs.java
+index d99f459b2e323474174cfd5d892cb7573a32ca12..d04543c34a6e1f79f735faec4f322fe35acd54bf 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/agent/Configs.java
++++ b/src/main/java/org/leavesmc/leaves/bot/agent/Configs.java
+@@ -11,7 +11,7 @@ import java.util.Map;
+ 
+ public class Configs<E> {
+ 
+-    private static final Map<String, Configs<?>> configs = new HashMap<>();
++    private static final Map<String, Configs<?>> configs = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - bot 构造在任意区域线程读
+ 
+     public static final Configs<Boolean> SKIP_SLEEP = register(new SkipSleepConfig());
+     public static final Configs<Boolean> ALWAYS_SEND_DATA = register(new AlwaysSendDataConfig());
+diff --git a/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnAction.java b/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnAction.java
+index 232d0abecb871d3e48c6833f839c921f405b7be7..f794389eb608c60ff60e0b1ad99fac502ca2015f 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnAction.java
++++ b/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnAction.java
+@@ -32,7 +32,11 @@ public class UseItemOnAction extends AbstractTimerAction<UseItemOnAction> {
+                 BlockEntity entity = bot.serverLevel().getBlockEntity(blockHitResult.getBlockPos());
+                 if (entity instanceof TrappedChestBlockEntity chestBlockEntity) {
+                     chestBlockEntity.startOpen(bot);
+-                    Bukkit.getScheduler().runTaskLater(MinecraftInternalPlugin.INSTANCE, () -> chestBlockEntity.stopOpen(bot), 1);
++                    // Oneiric - 与 Leaves 的差异：Leaves 用全局调度器，回调在全局线程上执行，
++            // 而 stopOpen() 会改箱子方块实体的 openersCounter —— 那是区域状态。
++            // 改成投递到 bot 所属区域线程（箱子就在它旁边）。
++            Bukkit.getRegionScheduler().runDelayed(MinecraftInternalPlugin.INSTANCE, bot.getLocation(),
++                task -> chestBlockEntity.stopOpen(bot), 1L);
+                     return true;
+                 }
+             } else {
+diff --git a/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnOffhandAction.java b/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnOffhandAction.java
+index 3616802c37908372cb7e30c61d6d343bcd3c1cc8..2c25d8a4fa1389cdace91b6654b27088261e4bb6 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnOffhandAction.java
++++ b/src/main/java/org/leavesmc/leaves/bot/agent/actions/UseItemOnOffhandAction.java
+@@ -32,7 +32,11 @@ public class UseItemOnOffhandAction extends AbstractTimerAction<UseItemOnOffhand
+                 BlockEntity entity = bot.serverLevel().getBlockEntity(blockHitResult.getBlockPos());
+                 if (entity instanceof TrappedChestBlockEntity chestBlockEntity) {
+                     chestBlockEntity.startOpen(bot);
+-                    Bukkit.getScheduler().runTaskLater(MinecraftInternalPlugin.INSTANCE, () -> chestBlockEntity.stopOpen(bot), 1);
++                    // Oneiric - 与 Leaves 的差异：Leaves 用全局调度器，回调在全局线程上执行，
++            // 而 stopOpen() 会改箱子方块实体的 openersCounter —— 那是区域状态。
++            // 改成投递到 bot 所属区域线程（箱子就在它旁边）。
++            Bukkit.getRegionScheduler().runDelayed(MinecraftInternalPlugin.INSTANCE, bot.getLocation(),
++                task -> chestBlockEntity.stopOpen(bot), 1L);
+                     return true;
+                 }
+             } else {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/AppleSkinProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/AppleSkinProtocol.java
+index 679d09424cb8cef65c16120e31fe542fd25de190..256138cc66ff4bd1a0c4e3cd9e4522006ed999b4 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/AppleSkinProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/AppleSkinProtocol.java
+@@ -30,11 +30,11 @@ public class AppleSkinProtocol implements LeavesProtocol {
+ 
+     private static final float MINIMUM_EXHAUSTION_CHANGE_THRESHOLD = 0.01F;
+ 
+-    private static final Map<ServerPlayer, Float> previousSaturationLevels = new HashMap<>();
+-    private static final Map<ServerPlayer, Float> previousExhaustionLevels = new HashMap<>();
+-    private static final Map<ServerPlayer, Boolean> previousNaturalRegeneration = new HashMap<>();
++    private static final Map<ServerPlayer, Float> previousSaturationLevels = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 读 / 区域线程写
++    private static final Map<ServerPlayer, Float> previousExhaustionLevels = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 读 / 区域线程写
++    private static final Map<ServerPlayer, Boolean> previousNaturalRegeneration = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 读 / 区域线程写
+ 
+-    private static final Map<UUID, Set<String>> subscribedChannels = new HashMap<>();
++    private static final Map<UUID, Set<String>> subscribedChannels = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 读 / 区域线程写
+ 
+     @Contract("_ -> new")
+     public static ResourceLocation id(String path) {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/BBORProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/BBORProtocol.java
+index c43636efffe7826a244051777f8fff53a7c7e67c..0df7181381fbf54ca0b6becabe2430711930cd1c 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/BBORProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/BBORProtocol.java
+@@ -38,7 +38,7 @@ public class BBORProtocol implements LeavesProtocol {
+     private static final ResourceLocation STRUCTURE_LIST_SYNC = id("structure_list_sync_v1");
+     // call
+     private static final Map<Integer, ServerPlayer> players = new ConcurrentHashMap<>();
+-    private static final Map<Integer, Set<BBoundingBox>> playerBoundingBoxesCache = new HashMap<>();
++    private static final Map<Integer, Set<BBoundingBox>> playerBoundingBoxesCache = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 与区域线程并发
+     private static final Map<ResourceLocation, Map<BBoundingBox, Set<BBoundingBox>>> dimensionCache = new ConcurrentHashMap<>();
+ 
+     private static boolean initialized = false;
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/CarpetServerProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/CarpetServerProtocol.java
+index 6f959f79d8097483ed3160590912d9133b2bbf60..f6a2a201c1ce3e27dfc117ef4b3ce53c0344154d 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/CarpetServerProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/CarpetServerProtocol.java
+@@ -30,7 +30,7 @@ public class CarpetServerProtocol implements LeavesProtocol {
+     private static final String HI = "69";
+     private static final String HELLO = "420";
+ 
+-    private static final Set<ServerPlayer> activePlayers = new HashSet<>();
++    private static final Set<ServerPlayer> activePlayers = java.util.concurrent.ConcurrentHashMap.newKeySet(); // Oneiric - 各区域线程加入/离开，注册时迭代
+ 
+     @Contract("_ -> new")
+     public static ResourceLocation id(String path) {
+@@ -72,7 +72,7 @@ public class CarpetServerProtocol implements LeavesProtocol {
+ 
+     public static class CarpetRules {
+ 
+-        private static final Map<String, CarpetRule> rules = new HashMap<>();
++        private static final Map<String, CarpetRule> rules = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 区域线程写规则值
+ 
+         public static void write(@NotNull CompoundTag tag) {
+             CompoundTag rulesNbt = new CompoundTag();
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/bladeren/BladerenProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/bladeren/BladerenProtocol.java
+index b0ecd34af08626bae950f2641226491d65a9e762..74143e900fd1878696a343e2e35ce0abfb351328 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/bladeren/BladerenProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/bladeren/BladerenProtocol.java
+@@ -24,7 +24,7 @@ public class BladerenProtocol implements LeavesProtocol {
+     public static final String PROTOCOL_ID = "bladeren";
+     public static final String PROTOCOL_VERSION = ProtocolUtils.buildProtocolVersion(PROTOCOL_ID);
+ 
+-    private static final Map<String, BiConsumer<ServerPlayer, CompoundTag>> registeredFeatures = new HashMap<>();
++    private static final Map<String, BiConsumer<ServerPlayer, CompoundTag>> registeredFeatures = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 插件注册 vs 区域线程读
+ 
+     @Contract("_ -> new")
+     public static ResourceLocation id(String path) {
+@@ -76,7 +76,7 @@ public class BladerenProtocol implements LeavesProtocol {
+ 
+     public static class LeavesFeatureSet {
+ 
+-        private static final Map<String, LeavesFeature> features = new HashMap<>();
++        private static final Map<String, LeavesFeature> features = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 插件注册 vs 区域线程读
+ 
+         public static void writeNBT(@NotNull CompoundTag tag) {
+             CompoundTag featureNbt = new CompoundTag();
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/bladeren/MsptSyncProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/bladeren/MsptSyncProtocol.java
+index 648431d1dc6a7a1aff1560ef0c172ef3f50fa9b8..a62f4f96650bd7a5436519ed4452cb33391567dc 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/bladeren/MsptSyncProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/bladeren/MsptSyncProtocol.java
+@@ -20,7 +20,7 @@ public class MsptSyncProtocol implements LeavesProtocol {
+ 
+     public static final String PROTOCOL_ID = "bladeren";
+     private static final ResourceLocation MSPT_SYNC = id("mspt_sync");
+-    private static final List<ServerPlayer> players = new ArrayList<>();
++    private static final List<ServerPlayer> players = new java.util.concurrent.CopyOnWriteArrayList<>(); // Oneiric - 区域线程增删 / 全局 tick 迭代
+ 
+     @Contract("_ -> new")
+     public static ResourceLocation id(String path) {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/jade/JadeProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/jade/JadeProtocol.java
+index 461b42939035a2ecb82553b91eaa4e2eae40aa16..ce7d8e9db9ac5d45829181e4470017ab7244d4ad 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/jade/JadeProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/jade/JadeProtocol.java
+@@ -74,10 +74,10 @@ public class JadeProtocol implements LeavesProtocol {
+     public static final HierarchyLookup<ServerDataProvider<EntityAccessor>> entityDataProviders = new HierarchyLookup<>(Entity.class);
+     public static final PairHierarchyLookup<ServerDataProvider<BlockAccessor>> blockDataProviders = new PairHierarchyLookup<>(new HierarchyLookup<>(Block.class), new HierarchyLookup<>(BlockEntity.class));
+     public static final WrappedHierarchyLookup<ServerExtensionProvider<ItemStack>> itemStorageProviders = WrappedHierarchyLookup.forAccessor();
+-    private static final Set<ServerPlayer> enabledPlayers = new HashSet<>();
++    private static final Set<ServerPlayer> enabledPlayers = java.util.concurrent.ConcurrentHashMap.newKeySet(); // Oneiric - 各区域线程握手/退出
+ 
+     public static PriorityStore<ResourceLocation, JadeProvider> priorities;
+-    private static List<Block> shearableBlocks = null;
++    private static volatile List<Block> shearableBlocks = null; // Oneiric - reload 线程重建 / 区域线程读
+ 
+     @Contract("_ -> new")
+     public static ResourceLocation id(String path) {
+@@ -161,7 +161,12 @@ public class JadeProtocol implements LeavesProtocol {
+ 
+     @ProtocolHandler.PayloadReceiver(payload = RequestEntityPayload.class)
+     public static void requestEntityData(ServerPlayer player, RequestEntityPayload payload) {
+-        Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
++        // Oneiric - 与 Leaves 的差异：Leaves 把处理排到主线程。Folia 上这里本来就已经在
++        // **玩家所属的区域线程**上（payload 由该玩家的连接 tick 分发），再交给
++        // getGlobalRegionScheduler 反而变成"用全局线程读别的区域的实体/方块状态"，
++        // 那是跨区访问。就地执行才是正确的 —— 数据源就是玩家眼前的东西，
++        // 而玩家所在的区域正是这些方块/实体所属的区域。
++        {
+             EntityAccessor accessor = payload.data().unpack(player);
+             if (accessor == null) {
+                 return;
+@@ -192,12 +197,13 @@ public class JadeProtocol implements LeavesProtocol {
+             tag.putInt("EntityId", entity.getId());
+ 
+             ProtocolUtils.sendPayloadPacket(player, new ReceiveDataPayload(tag));
+-        });
++        }
+     }
+ 
+     @ProtocolHandler.PayloadReceiver(payload = RequestBlockPayload.class)
+     public static void requestBlockData(ServerPlayer player, RequestBlockPayload payload) {
+-        Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
++        // Oneiric - 同 requestEntityData：就地执行，不绕全局线程（跨区读）。
++        {
+             BlockAccessor accessor = payload.data().unpack(player);
+             if (accessor == null) {
+                 return;
+@@ -237,7 +243,7 @@ public class JadeProtocol implements LeavesProtocol {
+             tag.putString("BlockId", BuiltInRegistries.BLOCK.getKey(block).toString());
+ 
+             ProtocolUtils.sendPayloadPacket(player, new ReceiveDataPayload(tag));
+-        });
++        }
+     }
+ 
+     @ProtocolHandler.ReloadServer
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/PacketSplitter.java b/src/main/java/org/leavesmc/leaves/protocol/servux/PacketSplitter.java
+index b0a568ee8109bd09a65f7a5decff11502889246b..4f2688ed5a76b2df4917e58060b654d0e6123c5f 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/PacketSplitter.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/PacketSplitter.java
+@@ -28,7 +28,7 @@ public class PacketSplitter {
+     public static final int DEFAULT_MAX_RECEIVE_SIZE_C2S = 1048576;
+     public static final int DEFAULT_MAX_RECEIVE_SIZE_S2C = 67108864;
+ 
+-    private static final Map<Long, ReadingSession> READING_SESSIONS = new HashMap<>();
++    private static final Map<Long, ReadingSession> READING_SESSIONS = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 多玩家分片上传
+ 
+     public static boolean send(IPacketSplitterHandler handler, FriendlyByteBuf packet, ServerPlayer player) {
+         return send(handler, packet, player, MAX_PAYLOAD_PER_PACKET_S2C);
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxEntityDataProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxEntityDataProtocol.java
+index 41988337654fe31d6277b0120d687fe9f82c2286..c41e15222dbe371d725956b19def232ea026af94 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxEntityDataProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxEntityDataProtocol.java
+@@ -32,7 +32,7 @@ public class ServuxEntityDataProtocol implements LeavesProtocol {
+ 
+     public static final int PROTOCOL_VERSION = 1;
+ 
+-    private static final Map<UUID, Long> readingSessionKeys = new HashMap<>();
++    private static final Map<UUID, Long> readingSessionKeys = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+ 
+     @ProtocolHandler.PlayerJoin
+     public static void onPlayerJoin(ServerPlayer player) {
+@@ -84,7 +84,11 @@ public class ServuxEntityDataProtocol implements LeavesProtocol {
+     }
+ 
+     public static void onBlockEntityRequest(ServerPlayer player, BlockPos pos) {
+-        Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
++        // Oneiric - 与 Leaves 的差异：Leaves 排到主线程。Folia 上这段本来就在
++        // **该玩家所属的区域线程**（payload 由玩家连接分发），再交给全局线程会变成
++        // "全局线程读别的区域的 BlockEntity" —— 跨区访问，可能读到半写入状态或撞区块锁。
++        // 方块实体就在玩家眼前，玩家所在区域正是它的所属区域，就地读才对。
++        {
+             BlockEntity be = player.level().getBlockEntity(pos);
+             CompoundTag nbt = be != null ? be.saveWithFullMetadata(player.registryAccess()) : new CompoundTag();
+ 
+@@ -92,11 +96,12 @@ public class ServuxEntityDataProtocol implements LeavesProtocol {
+             payload.pos = pos.immutable();
+             payload.nbt.merge(nbt);
+             sendPacket(player, payload);
+-        });
++        }
+     }
+ 
+     public static void onEntityRequest(ServerPlayer player, int entityId) {
+-        Bukkit.getGlobalRegionScheduler().run(MinecraftInternalPlugin.INSTANCE, (task) -> {
++        // Oneiric - 同 onBlockEntityRequest：就地执行，不绕全局线程。
++        {
+             Entity entity = player.level().getEntity(entityId);
+             CompoundTag nbt = TagUtil.saveEntityWithoutId(entity);
+ 
+@@ -104,7 +109,7 @@ public class ServuxEntityDataProtocol implements LeavesProtocol {
+             payload.entityId = entityId;
+             payload.nbt.merge(nbt);
+             sendPacket(player, payload);
+-        });
++        }
+     }
+ 
+     public static void sendPacket(ServerPlayer player, EntityDataPayload payload) {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxHudDataProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxHudDataProtocol.java
+index 578a08ebf7da5b510fbb58e524472e57b4a1d513..35ed88e60ed2912ced948fb72e68c5dda53d80c9 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxHudDataProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxHudDataProtocol.java
+@@ -39,14 +39,14 @@ public class ServuxHudDataProtocol implements LeavesProtocol {
+ 
+     public static final int PROTOCOL_VERSION = 2;
+ 
+-    private static final List<ServerPlayer> players = new ArrayList<>();
++    private static final List<ServerPlayer> players = new java.util.concurrent.CopyOnWriteArrayList<>(); // Oneiric - 区域线程增删 / 全局 tick 迭代
+     private static final int updateInterval = 80;
+ 
+-    private static final HashMap<ServerPlayer, List<DataLogger.Type>> loggerPlayers = new HashMap<>();
+-    private static final HashMap<DataLogger.Type, DataLogger<?>> LOGGERS = new HashMap<>();
+-    private static final HashMap<DataLogger.Type, Tag> DATA = new HashMap<>();
++    private static final Map<ServerPlayer, List<DataLogger.Type>> loggerPlayers = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 区域线程写 / 全局 tick 读
++    private static final Map<DataLogger.Type, DataLogger<?>> LOGGERS = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 初始化后只读，但刷新来自非全局线程
++    private static final Map<DataLogger.Type, Tag> DATA = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 全局 tick 写 / 区域线程读
+ 
+-    public static boolean refreshSpawnMetadata = false;
++    public static volatile boolean refreshSpawnMetadata = false; // Oneiric - 区域线程写 / 全局 tick 读写（跨线程信号必须 volatile）
+ 
+     @ProtocolHandler.Init
+     private static void initializeLoggers() {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxStructuresProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxStructuresProtocol.java
+index 04c2a2aabecac3877678d858bc4996955896009f..19cf5fd71f9aedd629fd4b90feb8bbc572b538d3 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxStructuresProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/ServuxStructuresProtocol.java
+@@ -46,8 +46,8 @@ public class ServuxStructuresProtocol implements LeavesProtocol {
+     private static final int updateInterval = 40;
+     private static final int timeout = 30 * 20;
+     private static final Map<Integer, ServerPlayer> players = new ConcurrentHashMap<>();
+-    private static final Map<UUID, Map<ChunkPos, Timeout>> timeouts = new HashMap<>();
+-    private static int retainDistance;
++    private static final Map<UUID, Map<ChunkPos, Timeout>> timeouts = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程 + 全局 tick
++    private static volatile int retainDistance; // Oneiric - 全局 tick 写 / 区域线程读（isOutOfRange）
+ 
+     @ProtocolHandler.PlayerJoin
+     public static void onPlayerJoin(ServerPlayer player) {
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/ServuxLitematicsProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/ServuxLitematicsProtocol.java
+index f5ec2607fb00e389cedbb463c52209aee35f2f07..d1d2e5cc1ff0023dfa88e3761b30be785e0d1ebd 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/ServuxLitematicsProtocol.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/ServuxLitematicsProtocol.java
+@@ -50,7 +50,7 @@ public class ServuxLitematicsProtocol implements LeavesProtocol {
+     public static final int PROTOCOL_VERSION = 1;
+ 
+     private static final CompoundTag metadata = new CompoundTag();
+-    private static final Map<UUID, Long> playerSession = new HashMap<>();
++    private static final Map<UUID, Long> playerSession = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+ 
+     @ProtocolHandler.Init
+     public static void init() {
+@@ -242,8 +242,10 @@ public class ServuxLitematicsProtocol implements LeavesProtocol {
+             long timeStart = System.currentTimeMillis();
+             SchematicPlacement placement = SchematicPlacement.createFromNbt(tags);
+             ReplaceBehavior replaceMode = ReplaceBehavior.fromStringStatic(OneiricNbt.getStringOr(tags, "ReplaceMode", ReplaceBehavior.NONE.name()));
+-            MinecraftServer.getServer().scheduleOnMain(() -> {
+-                placement.pasteTo(serverLevel, replaceMode);
++            // Oneiric - 与 Leaves 的差异：Leaves 用 scheduleOnMain（= tell(wrapRunnable(...))），
++            // 但 Folia 里这两个方法都直接抛 UnsupportedOperationException，照搬等于粘贴永远失败。
++            // 真正的正确做法是按区块投递到各区块所属的区域线程，见 pasteToFolia 的类注释。
++            placement.pasteToFolia(serverLevel, replaceMode, () -> {
+                 long timeElapsed = System.currentTimeMillis() - timeStart;
+                 player.getBukkitEntity().sendActionBar(
+                     Component.text("Pasted ")
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/placement/SchematicPlacement.java b/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/placement/SchematicPlacement.java
+index a080c8873eda4b6aacac01ecc16c30b726efea32..291a8858d53e54334edd7c76649a0c2147535846 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/placement/SchematicPlacement.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/servux/litematics/placement/SchematicPlacement.java
+@@ -285,4 +285,71 @@ public class SchematicPlacement {
+             SchematicPlacingUtils.placeToWorldWithinChunk(serverWorld, chunkPos, this, replaceBehavior, false)
+         );
+     }
++
++    /**
++     * Oneiric - Folia 版粘贴：<b>逐区块投递到该区块所属的区域线程</b>。
++     *
++     * <h2>为什么不能直接用 {@link #pasteTo}</h2>
++     *
++     * <p>{@code placeToWorldWithinChunk} 会 {@code world.setBlock(...)}、
++     * {@code world.addFreshEntity(...)}、往区块的 tick 队列排任务 —— 全是区域状态。
++     * 一个 Litematic 往往横跨多个区块，而 Folia 里相邻区块可能属于<b>不同</b>的区域线程。
++     * 在一个线程上把整片区域写完，等于跨区写别人的区块：轻则丢方块，重则死锁在区块锁上。</p>
++     *
++     * <p>所以这里按 {@link ChunkPos} 拆开，每个区块投递到自己的区域。
++     * {@code done} 在<b>所有</b>区块都写完后再触发一次（用于给玩家发提示）。</p>
++     *
++     * @param done 全部区块完成后的回调，可为 {@code null}
++     */
++    public void pasteToFolia(ServerLevel serverWorld, ReplaceBehavior replaceBehavior, @Nullable Runnable done) {
++        final Box enclosingBox = this.getEnclosingBox();
++        if (enclosingBox == null || enclosingBox.pos1() == null || enclosingBox.pos2() == null) {
++            ServuxProtocol.LOGGER.error("receiver a null enclosing box");
++            return;
++        }
++
++        final java.util.List<ChunkPos> chunks =
++                streamChunkPos(Objects.requireNonNull(enclosingBox.toVanilla())).toList();
++        if (chunks.isEmpty()) {
++            if (done != null) {
++                done.run();
++            }
++            return;
++        }
++
++        final java.util.concurrent.atomic.AtomicInteger remaining =
++                new java.util.concurrent.atomic.AtomicInteger(chunks.size());
++        final java.util.concurrent.atomic.AtomicReference<Throwable> failure =
++                new java.util.concurrent.atomic.AtomicReference<>();
++
++        for (final ChunkPos chunkPos : chunks) {
++            try {
++                org.bukkit.Bukkit.getRegionScheduler().execute(
++                    org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE,
++                    serverWorld.getWorld(), chunkPos.x, chunkPos.z,
++                    () -> {
++                        try {
++                            SchematicPlacingUtils.placeToWorldWithinChunk(
++                                serverWorld, chunkPos, this, replaceBehavior, false);
++                        } catch (final Throwable t) {
++                            failure.compareAndSet(null, t);
++                        } finally {
++                            if (remaining.decrementAndGet() == 0 && done != null) {
++                                if (failure.get() != null) {
++                                    org.leavesmc.leaves.LeavesLogger.LOGGER.warn(
++                                        "Litematic paste failed in chunk {},{}", chunkPos.x, chunkPos.z, failure.get());
++                                }
++                                done.run();
++                            }
++                        }
++                    });
++            } catch (final RuntimeException rejected) {
++                // 区域已卸载 / 调度器关闭：把这个区块算作完成，避免计数永远等不到 0
++                failure.compareAndSet(null, rejected);
++                if (remaining.decrementAndGet() == 0 && done != null) {
++                    done.run();
++                }
++            }
++        }
++    }
+ }
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/CommunicationManager.java b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/CommunicationManager.java
+index 3dc9c7683c546628e46eaf16c5e655076f19b418..a7d1452069467ba4a7eca87134229bb996fda866 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/CommunicationManager.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/CommunicationManager.java
+@@ -35,20 +35,20 @@ import java.util.UUID;
+ @LeavesProtocol.Register(namespace = "syncmatica")
+ public class CommunicationManager implements LeavesProtocol {
+ 
+-    protected static final Collection<ExchangeTarget> broadcastTargets = new ArrayList<>();
+-    protected static final Map<UUID, Boolean> downloadState = new HashMap<>();
+-    protected static final Map<UUID, Exchange> modifyState = new HashMap<>();
++    protected static final Collection<ExchangeTarget> broadcastTargets = new java.util.concurrent.CopyOnWriteArrayList<>(); // Oneiric - 各区域线程加入/离开并迭代
++    protected static final Map<UUID, Boolean> downloadState = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
++    protected static final Map<UUID, Exchange> modifyState = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+     protected static final Rotation[] rotOrdinals = Rotation.values();
+     protected static final Mirror[] mirOrdinals = Mirror.values();
+-    private static final Map<UUID, List<ServerPlacement>> downloadingFile = new HashMap<>();
+-    private static final Map<ExchangeTarget, ServerPlayer> playerMap = new HashMap<>();
++    private static final Map<UUID, List<ServerPlacement>> downloadingFile = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
++    private static final Map<ExchangeTarget, ServerPlayer> playerMap = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+     /**
+      * Oneiric - 26.x 的 Leaves 把 {@code exchangeTarget} 作为字段挂在
+      * {@link net.minecraft.server.network.ServerGamePacketListenerImpl} 上（mixin）。
+      * 我们不改 Minecraft 网络层类，改为按玩家维护映射，效果等价：
+      * 连接生命周期 == 玩家在线生命周期。
+      */
+-    private static final Map<ServerPlayer, ExchangeTarget> targetMap = new HashMap<>();
++    private static final Map<ServerPlayer, ExchangeTarget> targetMap = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+ 
+     public CommunicationManager() {
+     }
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/FileStorage.java b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/FileStorage.java
+index 1d2efe9b5173d45b22ac742cceeee4ec20dfb0c6..16c9dd567480dd4c6426f913c3af600d33f5a31a 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/FileStorage.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/FileStorage.java
+@@ -6,12 +6,12 @@ import org.jetbrains.annotations.NotNull;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.io.IOException;
+-import java.util.HashMap;
++import java.util.Map;
+ import java.util.UUID;
+ 
+ public class FileStorage {
+ 
+-    private final HashMap<ServerPlacement, Long> buffer = new HashMap<>();
++    private final Map<ServerPlacement, Long> buffer = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程读写
+ 
+     public LocalLitematicState getLocalState(final ServerPlacement placement) {
+         final File localFile = getSchematicPath(placement);
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/PlayerIdentifierProvider.java b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/PlayerIdentifierProvider.java
+index 4a6248fc17057c79b6cefe268191128c623946ad..193d85560069208d0e0e072766fdf226a9c5f7f5 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/PlayerIdentifierProvider.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/PlayerIdentifierProvider.java
+@@ -11,7 +11,7 @@ import java.util.UUID;
+ 
+ public class PlayerIdentifierProvider {
+ 
+-    private final Map<UUID, PlayerIdentifier> identifiers = new HashMap<>();
++    private final Map<UUID, PlayerIdentifier> identifiers = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程 computeIfAbsent
+ 
+     public PlayerIdentifierProvider() {
+         identifiers.put(PlayerIdentifier.MISSING_PLAYER_UUID, PlayerIdentifier.MISSING_PLAYER);
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/SyncmaticManager.java b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/SyncmaticManager.java
+index 27a056b306daa91400946a30e68ce01d47089ac8..3270f790fbdec0d92fa1e29ab18850e1a432341e 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/syncmatica/SyncmaticManager.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/syncmatica/SyncmaticManager.java
+@@ -19,7 +19,7 @@ import java.util.UUID;
+ public class SyncmaticManager {
+ 
+     public static final String PLACEMENTS_JSON_KEY = "placements";
+-    private final Map<UUID, ServerPlacement> schematics = new HashMap<>();
++    private final Map<UUID, ServerPlacement> schematics = new java.util.concurrent.ConcurrentHashMap<>(); // Oneiric - 各区域线程放置/删除
+ 
+     public void addPlacement(final ServerPlacement placement) {
+         schematics.put(placement.getId(), placement);
+diff --git a/src/main/java/org/leavesmc/leaves/replay/Recorder.java b/src/main/java/org/leavesmc/leaves/replay/Recorder.java
+index 1929eb907b389bd1d084912d6d07710555e69b35..897a1348872ebf7a37dce6c5c75ef7d8ad08d2ee 100644
+--- a/src/main/java/org/leavesmc/leaves/replay/Recorder.java
++++ b/src/main/java/org/leavesmc/leaves/replay/Recorder.java
+@@ -74,8 +74,9 @@ public class Recorder extends Connection {
+     private long lastPacket;
+     private long timeShift = 0;
+ 
+-    private boolean isSaved;
+-    private boolean isSaving;
++    private volatile boolean isSaved;
++    /** Oneiric - 收尾只允许一次；用 AtomicBoolean 化的字段配合 CAS，代替 Leaves 的 isSaving 布尔。 */
++    private final java.util.concurrent.atomic.AtomicBoolean SAVING_STARTED = new java.util.concurrent.atomic.AtomicBoolean(false);
+     private ConnectionProtocol state = ConnectionProtocol.LOGIN;
+ 
+     public Recorder(ServerPhotographer photographer, RecorderOption recorderOption, File replayFile) throws IOException {
+@@ -239,6 +240,11 @@ public class Recorder extends Connection {
+                     LOGGER.error("Error saving packet", e);
+                 }
+             });
++        } catch (java.util.concurrent.RejectedExecutionException rejected) {
++            // Oneiric - 录制已经在收尾（saveRecording 已 shutdown 队列）时还有包进来。
++            // Leaves 会把它当普通异常打一条 error；这里预期会出现，降为 debug，
++            // 免得停录时刷出一串 "Error saving packet"。
++            LOGGER.debug("Packet arrived after recording finished, dropped");
+         } catch (Exception e) {
+             LOGGER.error("Error saving packet", e);
+         }
+@@ -249,11 +255,17 @@ public class Recorder extends Connection {
+     }
+ 
+     public CompletableFuture<Void> saveRecording(File dest, boolean save) {
++        // Oneiric - Leaves 用的是 isSaved/isSaving 两个非原子 boolean 的 check-then-set，
++        // 而 /photographer remove 与插件 API 可能从不同区域线程同时进来：
++        // 两边都读到 isSaving=false，就会各自跑一次 saveService.shutdown + closeAndSave。
++        // 这里用一个 CAS 保证只有一个线程真正执行收尾。
++        if (!SAVING_STARTED.compareAndSet(false, true)) {
++            LOGGER.warn("saveRecording() called twice");
++            return CompletableFuture.failedFuture(new IllegalStateException("saveRecording() called twice"));
++        }
+         isSaved = true;
+-        if (!isSaving) {
+-            isSaving = true;
+-            metaData.duration = (int) lastPacket;
+-            return CompletableFuture.runAsync(() -> {
++        metaData.duration = (int) lastPacket;
++        return CompletableFuture.runAsync(() -> {
+                 try {
+                     saveMetadata();
+                     saveService.shutdown();
+@@ -284,8 +296,5 @@ public class Recorder extends Connection {
+                 final Thread thread = new Thread(runnable, "Recording file save thread");
+                 thread.start();
+             });
+-        }
+-        LOGGER.warn("saveRecording() called twice");
+-        return CompletableFuture.failedFuture(new IllegalStateException("saveRecording() called twice"));
+     }
+ }
+diff --git a/src/main/java/org/leavesmc/leaves/util/HopperCounter.java b/src/main/java/org/leavesmc/leaves/util/HopperCounter.java
+index ea37c0e715fca77e09fd9600a19604ba3de16a6e..eb7abbb039601580303dacb9948a33cb9fcf6300 100644
+--- a/src/main/java/org/leavesmc/leaves/util/HopperCounter.java
++++ b/src/main/java/org/leavesmc/leaves/util/HopperCounter.java
+@@ -60,7 +60,15 @@ public class HopperCounter {
+      * 我们的开关是静态属性，没有回调点。初值直接取配置，避免"yml 里开了
+      * 但还要先敲一次 /counter enable"的困惑；之后仍可用 /counter 临时关掉。</p>
+      */
+-    private static boolean enabled = LeavesConfig.modify.hopperCounter.enable;
++    /**
++     * Oneiric - 是否启用。
++     *
++     * <p>Leaves 是普通静态 boolean（单线程 Paper 够用）。Folia 上它被
++     * 各个区域线程在漏斗热路径里读、被 /counter 在全局线程写 ——
++     * 非 volatile 的 boolean 写入不保证别的线程能看到，/counter disable 可能"没生效"。
++     * 这里改为 volatile。</p>
++     */
++    private static volatile boolean enabled = LeavesConfig.modify.hopperCounter.enable;
+     private static final Map<DyeColor, HopperCounter> COUNTERS;
+ 
+     static {
+@@ -73,6 +81,19 @@ public class HopperCounter {
+ 
+     public final DyeColor color;
+     private final TextComponent coloredName;
++
++    /**
++     * Oneiric - 计数表。
++     *
++     * <p><b>为什么加锁而不是换 ConcurrentHashMap</b>：{@code Object2LongLinkedOpenHashMap}
++     * 是 fastutil 的有序实现，没有并发版本，而 {@link #format} 需要稳定顺序。
++     * 而 {@link #add} 在漏斗 tick 热路径上被<b>每个区域线程</b>调用（同色羊毛漏斗可能在
++     * 不同区域），{@link #reset}/{@link #format} 又被 /counter 在全局线程调用 ——
++     * 无序并发写会丢计数，迭代时并发写会 CME。</p>
++     *
++     * <p>锁粒度刻意选在单色计数器上：不同颜色的漏斗互不阻塞，
++     * 同色的本来就在写同一个计数表，串行化无法避免。</p>
++     */
+     private final Object2LongMap<Item> counter = new Object2LongLinkedOpenHashMap<>();
+     private long startTick;
+     private long startMillis;
+@@ -84,18 +105,22 @@ public class HopperCounter {
+     }
+ 
+     public void add(MinecraftServer server, ItemStack stack) {
+-        if (startTick < 0) {
+-            startTick = server.overworld().getGameTime();
+-            startMillis = System.currentTimeMillis();
++        synchronized (this.counter) {
++            if (startTick < 0) {
++                startTick = server.overworld().getGameTime();
++                startMillis = System.currentTimeMillis();
++            }
++            Item item = stack.getItem();
++            counter.put(item, counter.getLong(item) + stack.getCount());
+         }
+-        Item item = stack.getItem();
+-        counter.put(item, counter.getLong(item) + stack.getCount());
+     }
+ 
+     public void reset(MinecraftServer server) {
+-        counter.clear();
+-        startTick = server.overworld().getGameTime();
+-        startMillis = System.currentTimeMillis();
++        synchronized (this.counter) {
++            counter.clear();
++            startTick = server.overworld().getGameTime();
++            startMillis = System.currentTimeMillis();
++        }
+     }
+ 
+     public static void resetAll(MinecraftServer server, boolean fresh) {
+@@ -108,13 +133,30 @@ public class HopperCounter {
+     }
+ 
+     public List<Component> format(MinecraftServer server, boolean realTime) {
++        // Oneiric - 在锁内做快照：add() 在区域线程里并发写，直接迭代 object2LongEntrySet()
++        // 会抛 ConcurrentModificationException（/counter <color> 会随机崩）。
++        final List<Map.Entry<Item, Long>> snapshot;
++        final long startTick;
++        final long startMillis;
++        final long total;
++        synchronized (this.counter) {
++            startTick = this.startTick;
++            startMillis = this.startMillis;
++            snapshot = new ArrayList<>(this.counter.size());
++            long sum = 0L;
++            for (Object2LongMap.Entry<Item> entry : this.counter.object2LongEntrySet()) {
++                snapshot.add(Map.entry(entry.getKey(), entry.getLongValue()));
++                sum += entry.getLongValue();
++            }
++            total = sum;
++        }
++
+         long ticks = Math.max(realTime ? (System.currentTimeMillis() - startMillis) / 50 : server.overworld().getGameTime() - startTick, -1);
+ 
+         if (startTick < 0 || ticks == -1) {
+             return Collections.singletonList(Component.text().append(coloredName, Component.text(" hasn't started counting yet")).build());
+         }
+ 
+-        long total = getTotalItems();
+         if (total <= 0) {
+             return Collections.singletonList(Component.text()
+                 .append(Component.text("No items for "), coloredName)
+@@ -133,7 +175,8 @@ public class HopperCounter {
+             .append(Component.text("/h):"))
+             .build());
+ 
+-        items.addAll(counter.object2LongEntrySet().stream().sorted((e, f) -> Long.compare(f.getLongValue(), e.getLongValue())).map(entry -> {
++        // Oneiric - 用锁内快照排序，不再直接迭代活的计数表
++        items.addAll(snapshot.stream().sorted((e, f) -> Long.compare(f.getValue(), e.getValue())).map(entry -> {
+             Item item = entry.getKey();
+             Component name = Component.translatable(item.getDescriptionId());
+             TextColor textColor = guessColor(server, item);
+@@ -144,7 +187,7 @@ public class HopperCounter {
+                 name = name.style(name.style().merge(Style.style(TextDecoration.ITALIC)));
+             }
+ 
+-            long count = entry.getLongValue();
++            long count = entry.getValue();
+             return Component.text()
+                 .append(Component.text("- ", NamedTextColor.GRAY))
+                 .append(name)
+@@ -345,7 +388,10 @@ public class HopperCounter {
+     }
+ 
+     public long getTotalItems() {
+-        return counter.isEmpty() ? 0 : counter.values().longStream().sum();
++        // Oneiric - fastutil 的 longStream 会遍历内部表，必须与 add() 互斥
++        synchronized (this.counter) {
++            return counter.isEmpty() ? 0 : counter.values().longStream().sum();
++        }
+     }
+ 
+     public static HopperCounter getCounter(DyeColor color) {

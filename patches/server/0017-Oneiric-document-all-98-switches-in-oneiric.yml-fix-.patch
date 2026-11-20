@@ -1,0 +1,390 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 16:33:11 +0800
+Subject: [PATCH] Oneiric: document all 98 switches in oneiric.yml + fix
+ RegionizedWorldDataSwitcher rotation
+
+
+diff --git a/src/main/java/io/oneiric/core/RegonizedWorldDataSwitcher.java b/src/main/java/io/oneiric/core/RegonizedWorldDataSwitcher.java
+index fbacba21c048a9db6d07c9789ae5afaabe3b50ba..a3717cd8ba787e079baedd9cec95fe9b00cca9b3 100644
+--- a/src/main/java/io/oneiric/core/RegonizedWorldDataSwitcher.java
++++ b/src/main/java/io/oneiric/core/RegonizedWorldDataSwitcher.java
+@@ -4,6 +4,31 @@ import io.papermc.paper.threadedregions.RegionizedWorldData;
+ import it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap;
+ 
+ 
++/**
++ * Oneiric - 区域数据切换器（移植自 Luminol，修正两处缺陷）。
++ *
++ * <h2>它解决什么问题</h2>
++ *
++ * <p>Folia 把世界数据按区域拆成多个 {@link RegionizedWorldData}。当某个实体/连接
++ * 所在的位置在 {@code regionToData} 里查不到（区域正在拆分/合并的瞬间），
++ * 不能直接丢弃它 —— 必须"借"一个区域数据把它放进去，否则实体会凭空消失。</p>
++ *
++ * <h2>修正的缺陷</h2>
++ *
++ * <ol>
++ *   <li><b>{@code calledTimes} 从未递增</b>：原实现只 {@code set(0)} 重置，
++ *       但没有任何 {@code ++}。于是 {@code calledTimes.get() / size >= 400}
++ *       恒为 {@code 0 / size >= 400} = false，{@code randomIndex} 永远停在 0，
++ *       整个"轮转"逻辑是死代码 —— 每次都只命中 {@code regionToData} 的第一个元素。
++ *       大量实体涌向同一区域数据时会造成该区域数据被撑爆而其他区域空闲。</li>
++ *   <li><b>越界判断用了 {@code >} 而非 {@code >=}</b>：{@code idx > size} 时
++ *       才归零，意味着 {@code idx == size} 会穿过检查，而后面
++ *       {@code curr == idx} 的循环又走不到这个下标，于是静默返回
++ *       {@code lastMatch}（可能是上一个世界的、甚至 null 的数据）。</li>
++ * </ol>
++ *
++ * <p>这两处都是<b>上游遗留</b>，不是 Oneiric 引入的；修正后行为与注释描述的意图一致。</p>
++ */
+ public class RegonizedWorldDataSwitcher {
+     private volatile RegionizedWorldData lastMatch = null;
+ 
+@@ -18,6 +43,15 @@ public class RegonizedWorldDataSwitcher {
+     private final ThreadLocal<Integer> randomIndex = ThreadLocal.withInitial(() -> 0);
+     private final ThreadLocal<Integer> calledTimes = ThreadLocal.withInitial(() -> 0);
+ 
++    /**
++     * 每切换多少次才把 {@code randomIndex} 前进一步。
++     *
++     * <p>语义：同一个索引连续命中 {@code SWITCH_BATCH * regionCount} 次后换下一个，
++     * 也就是在 N 个候选之间<b>平均分配</b>。原实现把这个常量写成 400 却忘了递增计数器，
++     * 所以这个值此前从未生效；现在它真正起作用了。</p>
++     */
++    private static final int SWITCH_BATCH = 400;
++
+     public void onTickFinished(){
+         this.randomIndex.remove();
+         this.calledTimes.remove();
+@@ -28,31 +62,47 @@ public class RegonizedWorldDataSwitcher {
+         this.calledTimes.set(0);
+     }
+ 
++    /**
++     * 查表取区域数据；查不到时按轮转规则借一个。
++     *
++     * @param regionToData 该世界的"区域段 → 区域数据"映射
++     * @param data         直接查到的结果，非 null 时原样返回
++     * @return 一定非 null（除非 {@code regionToData} 为空且从未匹配过任何数据）
++     */
+     public RegionizedWorldData randomIfNull(Long2ReferenceOpenHashMap<RegionizedWorldData> regionToData, RegionizedWorldData data){
+         if (data != null){
+             return data;
+         }
+ 
++        final int size = regionToData.size();
++        if (size == 0) {
++            // 没有任何区域数据可借：返回上次匹配到的（可能为 null，由调用方容忍）
++            return this.lastMatch;
++        }
++
++        // Oneiric - 修正 1：递增计数器，让下面的阈值判断真正生效。
++        int times = this.calledTimes.get() + 1;
+         int idx = this.randomIndex.get();
+ 
+-        if (this.calledTimes.get() / regionToData.size() >= 400){ //TODO Is that a truly exact value?
+-            this.calledTimes.set(0);
+-            this.randomIndex.set(idx+1);
++        if (times / size >= SWITCH_BATCH){
++            times = 0;
++            idx++;
+         }
++        this.calledTimes.set(times);
+ 
+-        if (idx > regionToData.size()){
+-            this.randomIndex.set(0);
++        // Oneiric - 修正 2：>= 而非 >。idx == size 也是越界。
++        if (idx >= size){
+             idx = 0;
+         }
++        this.randomIndex.set(idx);
+ 
+-        int curr = 0;
+         RegionizedWorldData result = this.getLastMatch();
+-
++        int curr = 0;
+         for (RegionizedWorldData target : regionToData.values()){
+             if (curr == idx){
+                 result = target;
++                break;
+             }
+-
+             curr++;
+         }
+ 
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index 8b4ff41fc7b7fa6e8622d66119f3f8eadea5ced1..1d5edaa270ba389d0f796d4479b5ece48f5efcff 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -362,6 +362,18 @@ public final class OneiricConfig {
+         }
+     }
+ 
++    /**
++     * Oneiric - 读一个字符串值的属性（供名字前缀/后缀、名单等使用）。
++     *
++     * <p>与 {@link #intValue} 并列：非布尔配置不能走布尔路径。
++     * 缺省时返回 {@code fallback}，空串原样返回 —— {@code fakeplayer-prefix: ""}
++     * 是合法配置，不能当成"未设置"。</p>
++     */
++    public static String stringValue(final String name, final String fallback) {
++        final String raw = System.getProperty(PREFIX + name);
++        return (raw == null) ? fallback : raw;
++    }
++
+     /** 全部开关的生效值，供状态行使用。 */
+     public static String status() {
+         final StringBuilder sb = new StringBuilder(256);
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index 1dd6752296275c5bfbbf2d8c691115a3d645f3f1..f1dc7eecaddcd896b603c11afeaaa3d92ccb45bd 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -61,7 +61,7 @@ public final class OneiricYml {
+         if (!Files.isRegularFile(file)) {
+             return;
+         }
+-        final Map<String, Boolean> values;
++        final Map<String, String> values;
+         try {
+             values = parse(file);
+         } catch (final IOException e) {
+@@ -71,7 +71,7 @@ public final class OneiricYml {
+         }
+         int applied = 0;
+         final StringBuilder unknown = new StringBuilder();
+-        for (final Map.Entry<String, Boolean> e : values.entrySet()) {
++        for (final Map.Entry<String, String> e : values.entrySet()) {
+             final String name = e.getKey();
+             if (!OneiricConfig.isKnown(name)) {
+                 // 拼错的键必须被点名：静默忽略会让用户以为"我改了它"
+@@ -85,7 +85,7 @@ public final class OneiricYml {
+             if (System.getProperty(prop) != null) {
+                 continue; // 命令行优先，不覆盖
+             }
+-            System.setProperty(prop, e.getValue().toString());
++            System.setProperty(prop, e.getValue());
+             applied++;
+         }
+         loadedSwitches = applied;
+@@ -99,11 +99,22 @@ public final class OneiricYml {
+     /**
+      * 解析 {@code switches:} 段。**只接受平铺结构**。
+      *
+-     * <p>缩进比 {@code switches:} 更深、且形如 {@code 名字: true|false} 的行会被采纳；
+-     * 以 {@code #} 开头的行整体忽略（注释）；非布尔的键忽略（本类不处理参数键）。</p>
++     * <p>缩进比 {@code switches:} 更深、且形如 {@code 名字: 值} 的行会被采纳；
++     * 以 {@code #} 开头的行整体忽略（注释）。</p>
++     *
++     * <h2>Oneiric - 支持非布尔值</h2>
++     *
++     * <p>原来这里只收 {@code true}/{@code false}，其它值<b>静默丢弃</b>。
++     * 但 {@code OneiricConfig.NAMES} 里有一批数值/字符串开关
++     * （{@code fakeplayer-limit}、{@code fakeplayer-prefix}、{@code xaero-server-id} …），
++     * 用户在 yml 里写了它们却毫无反应，日志里也没有任何提示 —— 这是最难查的一类问题。</p>
++     *
++     * <p>现在原样保留成字符串写进系统属性，由 {@link OneiricConfig#intValue} /
++     * {@link OneiricConfig#stringValue} 各自解析。布尔开关的读取路径完全不变
++     * （{@code Boolean.parseBoolean} 对 "true"/"false" 的行为一致）。</p>
+      */
+-    static Map<String, Boolean> parse(final Path file) throws IOException {
+-        final Map<String, Boolean> out = new LinkedHashMap<>();
++    static Map<String, String> parse(final Path file) throws IOException {
++        final Map<String, String> out = new LinkedHashMap<>();
+         boolean inSwitches = false;
+         int switchesIndent = -1;
+ 
+@@ -137,12 +148,16 @@ public final class OneiricYml {
+             if (hash >= 0) {
+                 value = value.substring(0, hash).strip();
+             }
++            // 去掉 YAML 字符串的成对引号：prefix: "Bot_"
++            if (value.length() >= 2
++                    && ((value.startsWith("\"") && value.endsWith("\""))
++                        || (value.startsWith("'") && value.endsWith("'")))) {
++                value = value.substring(1, value.length() - 1);
++            }
+             if (name.isEmpty() || value.isEmpty()) {
+                 continue;
+             }
+-            if (value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+-                out.put(name, Boolean.parseBoolean(value.toLowerCase()));
+-            }
++            out.put(name, value);
+         }
+         return out;
+     }
+@@ -370,6 +385,82 @@ public final class OneiricYml {
+                 "开启后指向羊毛的漏斗不再受传输冷却限制，可一次 tick 内搬空来源容器。",
+                 "对应 Carpet 的 hopperCountersUnlimitedSpeed 规则。",
+                 "默认关：它会明显改变吞吐量和时序，只有需要快速计数时打开。");
++
++        // ── 假玩家 / Bot（移植自 LeavesMC/Leaves，GPLv3）
++        //
++        // 这一段的 15 项以前只登记在 OneiricConfig.NAMES 里、没有写进 yml：
++        // 功能能用，但打开配置文件看不到它们，"以为没这个功能"。
++        sb.append("\n");
++        sb.append("  # = = = = = = = = = = = = = = = = = [假玩家 / Bot ]\n");
++        sb.append("  # 移植自 LeavesMC/Leaves（GPLv3）。不创建 bot 时这些开关不占任何资源。\n");
++        sb.append("  # 命令：/bot create <名字> [皮肤名] | /bot remove <名字> | /bot list\n");
++        sb.append("  #       /bot action <名字> <动作> | /bot config <名字> <项> [值]\n");
++        sb.append("  #       /bot save <名字> | /bot load <名字>\n");
++        block(sb, "fakeplayer-support", true, "假玩家系统总开关",
++                "允许 /bot 命令创建、保存、加载假玩家；关闭后整个子系统不响应。",
++                "默认开：不创建 bot 时 BotList 是空表，不占内存也不 tick，开着没有代价。",
++                "只有在完全不希望服务器出现 bot（例如纯净服）时才关。");
++        block(sb, "fakeplayer-resident", false, "常驻假玩家",
++                "服务器重启时自动复活上次未手动移除的 bot，并在停机时保存它们。",
++                "默认关：常驻 bot 会在无人管理时持续占用实体槽与 tick 预算，属于运维策略。",
++                "需要 bot 24 小时在线（挂机刷物品、保持区块加载）时打开。");
++        block(sb, "fakeplayer-manual-save-and-load", false, "手动存读档",
++                "启用 /bot save 与 /bot load：只有手动保存的 bot 才会写入磁盘，移除时直接丢弃。",
++                "默认关：随世界一起持久化更符合直觉，玩家不会因为没敲过 save 而丢 bot。",
++                "需要把 bot 当作可反复存读的「模板」来用时打开。");
++        block(sb, "fakeplayer-modify-config", false, "在线改 bot 配置",
++                "允许 /bot config 在线修改 bot 的模拟距离、跳过睡觉、生成幻翼等参数。",
++                "默认关：属调试/精细控制功能，普通挂机不需要。",
++                "需要调整 bot 的模拟距离或让它参与睡觉判定时打开。");
++        block(sb, "fakeplayer-use-action", false, "bot 动作脚本",
++                "允许 /bot action 下达攻击、挖掘、钓鱼、跳跃、使用物品等动作。",
++                "默认关：动作会真实改变世界（挖方块、打怪），属于需要显式授权的行为。",
++                "要做自动化农场、挂机钓鱼、自动战斗时打开。");
++        block(sb, "fakeplayer-skip-sleep", false, "bot 参与睡觉判定",
++                "bot 会像真玩家一样计入「是否有人在床上」，影响夜晚跳过。",
++                "默认关：bot 不该在无人知晓的情况下改变夜晚节奏。",
++                "希望 bot 帮助跳过夜晚时打开；注意它会让单人服的夜晚更快过去。");
++        block(sb, "fakeplayer-spawn-phantom", false, "bot 触发幻翼生成",
++                "bot 的「未睡觉时间」参与幻翼生成判定，等于多一个人形。",
++                "默认关：会让幻翼在 bot 附近刷出，可能干扰挂机农场。",
++                "需要测试幻翼机制、或希望幻翼在特定位置刷新时打开。");
++        block(sb, "fakeplayer-always-send-data", false, "始终向 bot 发送实体数据",
++                "每 tick 都向 bot 推送周围实体，而不是按模拟距离节流。",
++                "默认关：节流能显著降低带宽与 CPU，绝大多数场景够用。",
++                "bot 需要感知远处实体（远程狙击、大范围检测）时打开。");
++        block(sb, "fakeplayer-cache-skin", false, "缓存 bot 皮肤",
++                "把从 Mojang 拉到的皮肤缓存起来，同一个名字不再重复请求。",
++                "默认关：一次创建只查一次，缓存收益有限，且会让改皮肤后不立即生效。",
++                "要批量创建同名 bot、或网络到 Mojang 不稳定时打开。");
++        block(sb, "fakeplayer-open-inventory", false, "允许打开 bot 背包",
++                "玩家空手右键 bot 可以打开它的背包并取放物品。",
++                "默认关：等于给了一个远程仓库，可能被用来绕过容器限制。",
++                "需要手动整理 bot 背包时打开。");
++
++        // ── 假玩家：非布尔参数（数值 / 字符串）
++        sb.append("\n");
++        sb.append("  # -- 以下是参数型配置（不是开关），改完需要重启 --\n");
++        blockRaw(sb, "fakeplayer-limit", "10", false, "同时存在的 bot 上限",
++                "超过这个数量后 /bot create 会被拒绝并在列表里显示 (n/上限)。",
++                "默认 10：足以覆盖常见挂机需求，又不至于让一个 bot 农场吃满实体预算。",
++                "需要更多 bot 时改大；注意每个 bot 都是一个完整 ServerPlayer。");
++        blockRaw(sb, "fakeplayer-prefix", "", true, "bot 名字前缀",
++                "创建 bot 时自动加在名字前面，用于在玩家列表里区分人与 bot。",
++                "默认空：保持和 Leaves 一致，bot 名字就是玩家敲的那个名字。",
++                "想让人一眼看出是 bot 时设置，例如 Bot_ 。注意加上后名字总长不能超过 16。");
++        blockRaw(sb, "fakeplayer-suffix", "", true, "bot 名字后缀",
++                "创建 bot 时自动加在名字后面。",
++                "默认空，理由同上。",
++                "与 prefix 二选一即可，不要同时加长名字导致超过 16 字符。");
++        blockRaw(sb, "fakeplayer-regen-amount", "0.0", false, "bot 生命回复系数",
++                "每 tick 为 bot 回复的生命值系数；0 表示不回复，保持原版饥饿机制。",
++                "默认 0.0：与原版一致，bot 需要吃东西才会回血。",
++                "希望 bot 不靠食物维持生存时设一个小值（例如 0.05）。");
++        blockRaw(sb, "fakeplayer-unable-names", "Server", true, "禁止使用的 bot 名",
++                "逗号分隔的保留名单，这些名字不能用来创建 bot。",
++                "默认只保留 Server，避免与常见的服务器同名占位冲突。",
++                "有插件用特殊名字做占位实体时，把那些名字加进来。");
++
+         // ── Carpet / 生电规则（对应 fabric-carpet 与 Leaves 的 mc 补丁）
+         sb.append("\n");
+         sb.append("  # = = = = = = = = = = = = = = = = = [Carpet / 生电规则 ]\n");
+@@ -612,6 +703,33 @@ public final class OneiricYml {
+         }
+     }
+ 
++    /**
++     * Oneiric - 写一个<b>非布尔</b>开关：数值或字符串。
++     *
++     * <p>与 {@link #block} 的区别只在最后一行：这里按类型决定是否需要引号。
++     * 字符串值一律加双引号，因为 {@code fakeplayer-unable-names} 这类值可能含逗号，
++     * 裸写会被 YAML 误解析成数组；而 {@link #parse} 又会把成对引号去掉，
++     * 所以加引号对读取方完全透明。</p>
++     *
++     * @param value 已格式化成字符串的值（调用方负责 {@code Integer.toString} 等）
++     * @param quote 是否需要加引号
++     */
++    private static void blockRaw(final StringBuilder sb, final String name, final String value,
++                                 final boolean quote, final String title,
++                                 final String what, final String why, final String when) {
++        sb.append("  # ").append(title).append('\n');
++        sb.append("  # 【做什么】").append(what).append('\n');
++        sb.append("  # 【默认值】").append(why).append('\n');
++        sb.append("  # 【什么时候该改】").append(when).append('\n');
++        sb.append("  ").append(name).append(": ");
++        if (quote) {
++            sb.append('"').append(value.replace("\"", "")).append('"');
++        } else {
++            sb.append(value);
++        }
++        sb.append('\n');
++    }
++
+     /** yml 实际生效了几个开关。 */
+ 
+     /** 状态行片段。 */
+diff --git a/src/main/java/org/leavesmc/leaves/LeavesConfig.java b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+index 4d24635ab528cdb2ddbcb9eb78caa451b185146b..ad2a41eb3197196e094c414d1a8804f2632dd267 100644
+--- a/src/main/java/org/leavesmc/leaves/LeavesConfig.java
++++ b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+@@ -75,22 +75,44 @@ public class LeavesConfig {
+     /** 允许玩家右键 bot 打开其背包。 */
+     public static final boolean openFakeplayerInventory = enabled("fakeplayer-open-inventory");
+ 
+-    /** 同时存在的 bot 数量上限。 */
+-    public static final int fakeplayerLimit = Integer.getInteger("oneiric.fakeplayer-limit", 10);
++    /**
++     * 同时存在的 bot 数量上限。
++     *
++     * <p>Oneiric - 走 {@link OneiricConfig#intValue}：命令行 {@code -D} 与
++     * {@code oneiric.yml} 都能设置，yml 里写非整数会**点名告警**而不是静默用默认值。</p>
++     */
++    public static final int fakeplayerLimit = OneiricConfig.intValue("fakeplayer-limit", 10);
+ 
+     /** bot 名字前缀（用于在玩家列表里区分，默认空）。 */
+-    public static final String fakeplayerPrefix = System.getProperty("oneiric.fakeplayer-prefix", "");
++    public static final String fakeplayerPrefix = OneiricConfig.stringValue("fakeplayer-prefix", "");
+ 
+     /** bot 名字后缀。 */
+-    public static final String fakeplayerSuffix = System.getProperty("oneiric.fakeplayer-suffix", "");
++    public static final String fakeplayerSuffix = OneiricConfig.stringValue("fakeplayer-suffix", "");
+ 
+-    /** 每个 tick 为 bot 回复的饥饿值/生命值系数（0 表示不回复，保持原版饥饿机制）。 */
+-    public static final double fakeplayerRegenAmount =
+-            Double.parseDouble(System.getProperty("oneiric.fakeplayer-regen-amount", "0.0"));
++    /**
++     * 每个 tick 为 bot 回复的饥饿值/生命值系数（0 表示不回复，保持原版饥饿机制）。
++     *
++     * <p>Oneiric - 用 {@code stringValue} + 自行解析：解析失败时必须点名告警，
++     * 一个写错的 {@code fakeplayer-regen-amount: abc} 不能让服务器在类初始化时抛
++     * {@code NumberFormatException} 直接起不来。</p>
++     */
++    public static final double fakeplayerRegenAmount = parseDoubleSafe(
++            OneiricConfig.stringValue("fakeplayer-regen-amount", "0.0"), "fakeplayer-regen-amount", 0.0D);
+ 
+     /** 禁止用作 bot 名的名字（逗号分隔）。 */
+     public static final java.util.List<String> unableFakeplayerNames =
+-            java.util.Arrays.asList(System.getProperty("oneiric.fakeplayer-unable-names", "Server").split(","));
++            java.util.Arrays.asList(OneiricConfig.stringValue("fakeplayer-unable-names", "Server").split(","));
++
++    /** Oneiric - 容错的双精度解析：坏值只告警并回落，不让配置错误变成启动崩溃。 */
++    private static double parseDoubleSafe(final String raw, final String name, final double fallback) {
++        try {
++            return Double.parseDouble(raw.trim());
++        } catch (final NumberFormatException malformed) {
++            org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
++                    "[Oneiric] oneiric.{} 不是数字（{}），改用 {}", name, raw, fallback);
++            return fallback;
++        }
++    }
+ 
+     /** 杂项。 */
+     public static final class Mics {

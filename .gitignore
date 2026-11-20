@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Oneiric .gitignore
+#
+# 关键约定：Oneiric-Server/ 与 Oneiric-API/ 是 applyServerPatches 的**生成产物**，
+# 永远不会提交。仓库里的真实源码只有 patches/server/*.patch。
+# 这条规则若失效，一次 git add -A 就会把 18000 个上游文件（约 180 MB）塞进仓库。
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Paperweight 生成目录（最重要）
+Oneiric-API/
+Oneiric-Server/
+
+# 旧核心名（LightingLuminol）时期的规则，保留以防有人从旧分支合并
+LightingLuminol-API/
+LightingLuminol-Server/
+
+# api-generator 的生成结果
+paper-api-generator/
+
+# ── Gradle
+.gradle/
+build/
+*/build/
+!gradle/wrapper/gradle-wrapper.jar
+gradle-app.setting
+!gradle-wrapper.jar
+
+# ── IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.classpath
+.project
+.settings/
+nbproject/
+nbactions.xml
+.vscode/
+
+# ── JVM 崩溃
+core.*
+hs_err_pid*
+replay_pid*
+
+# ── 运行期目录
+run/
+logs/
+crash-reports/
+world/
+world_nether/
+world_the_end/
+plugins/
+cache/
+libraries/
+versions/
+oneiric_config/
+banned-ips.json
+banned-players.json
+ops.json
+usercache.json
+whitelist.json
+eula.txt
+server.properties
+spigot.yml
+bukkit.yml
+commands.yml
+help.yml
+permissions.yml
+purpur.yml
+oneiric.yml
+
+# ── 构建产物
+dist/
+bin/
+target/
+manifest.mf
+build.xml
+dependency-reduced-pom.xml
+
+# ── 系统文件
+.DS_Store
+.DS_Store/
+*~
+.*.sw[a-p]
+Thumbs.db
+desktop.ini
+
+# ── 本地工具与临时文件
+/patches/todo/
+*.local
+*.log
+!build-version.txt

@@ -1,0 +1,772 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 00:27:17 +0800
+Subject: [PATCH] Oneiric: carpet rules batch
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index d6461a77b8aea5e2f096e8f152c5e3ec81c15e47..d52999fcf0e4c9a045a5798ab721c244e27c8f04 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -151,6 +151,49 @@ public final class OneiricConfig {
+             // Carpet 的 hopperCountersUnlimitedSpeed：漏斗指向羊毛时一次 tick 内搬空。
+             // 默认关 —— 它会显著改变吞吐量，属于"规则"而不是"修复"。
+             "hopper-counter-unlimited-speed",
++            // ── Carpet / 生电规则（对应 Leaves 的 mc 补丁，逐条独立开关）
++            // 每条都改变一个具体装置的行为，默认关；做对应红石/生电时按需打开。
++            "shears-in-dispenser-zero",
++            "redstone-shears-wrench",
++            "movable-budding-amethyst",
++            "spectator-no-advancement",
++            "stick-armorstand",
++            "snowball-and-egg-knockback",
++            "flatten-triangular",
++            "elytra-no-chunk-load",
++            "optimized-dragon-respawn",
++            // 1gt 延迟类
++            "copper-bulb-1gt",
++            // 可再生资源类
++            "renewable-sponges",
++            "renewable-coral",
++            // 村民交易类
++            "villager-infinite-discounts",
++            "shared-villager-discounts",
++            // 生物行为类
++            "spider-jockeys-gapple",
++            "old-zombie-reinforcement",
++            "old-zombie-piglin-drop",
++            "old-raid-behavior",
++            // 方块/物理类
++            "anvil-destroy-items",
++            "disable-vault-blacklist",
++            "old-minecart-motion",
++            "tripwire-hook-duplicate",
++            "projectile-tick-order",
++            "tnt-wet-no-item-damage",
++            "old-projectile-explosion",
++            "keep-leash-on-firework",
++            "allow-inf-nan-motion",
++            "redstone-ignore-upwards-update",
++            "old-block-remove-behaviour",
++            // 更新抑制类
++            "sound-update-suppression",
++            "cce-update-suppression",
++            "instant-block-updater",
++            // 其它
++            "spawn-invulnerable-time",
++            "avoid-anvil-too-expensive",
+             // ── 生电优先：硬禁止
+             "optimize-suffocation",
+             "optimize-entities",
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index 497767a3bec5843925202e3f93a2d681126c731a..2d4e22b1cb5956b1dddae335b41fdb7420a7cf6a 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -364,6 +364,135 @@ public final class OneiricYml {
+                 "开启后指向羊毛的漏斗不再受传输冷却限制，可一次 tick 内搬空来源容器。",
+                 "对应 Carpet 的 hopperCountersUnlimitedSpeed 规则。",
+                 "默认关：它会明显改变吞吐量和时序，只有需要快速计数时打开。");
++        // ── Carpet / 生电规则（对应 fabric-carpet 与 Leaves 的 mc 补丁）
++        sb.append("\n");
++        sb.append("  # = = = = = = = = = = = = = = = = = [Carpet / 生电规则 ]\n");
++        sb.append("  # 以下每条都改变一个具体装置的行为，默认全部关闭。\n");
++        sb.append("  # 做对应红石/生电装置时按需打开；不做的装置保持关闭即与原版一致。\n");
++        block(sb, "redstone-shears-wrench", false, "剪刀扳手",
++                "手持剪刀右键可旋转观察者/发射器/活塞/漏斗/中继器/比较器/合成器/拉杆/活板门等元件的朝向。",
++                "对应 Carpet 的 shearsWrench，省掉调试棒。元件处于通电/锁存状态时拒绝旋转，避免搅乱装置。",
++                "不需要用剪刀调朝向时保持关闭。");
++        block(sb, "shears-in-dispenser-zero", false, "发射器剪刀不耗耐久",
++                "发射器里的剪刀剪切时不掉耐久。",
++                "对应 Carpet 的 shearsInDispenserCanZeroAmount，用于全自动剪羊毛/蜂巢。",
++                "正常损耗耐久时保持关闭。");
++        block(sb, "movable-budding-amethyst", false, "紫水晶母岩可推动",
++                "紫水晶母岩可被活塞推动（原版不能推）。",
++                "对应 Carpet 的 movableBuddingAmethyst，用于移动紫水晶农场。",
++                "不做紫水晶农场时不建议打开。");
++        block(sb, "snowball-and-egg-can-knockback", false, "雪球/鸡蛋击退玩家",
++                "雪球与鸡蛋命中玩家时造成击退（原版对玩家无击退）。",
++                "对应 Carpet 的 snowballAndEggCanKnockback，用于无伤击退装置。",
++                "普通生存服保持关闭。");
++        block(sb, "stick-armorstand", false, "木棍调盔甲架手臂",
++                "潜行手持木棍右键盔甲架可切换手臂显示。",
++                "对应 Carpet 的 stickChangeArmorStandArmStatus，摆场景时方便。",
++                "不需要时保持关闭。");
++        block(sb, "spectator-no-advancement", false, "旁观者不拿成就",
++                "旁观者模式下的玩家不再触发成就进度。",
++                "对应 Leaves 的 Spectator dont get Advancement；生电服里旁观者常常挂在装置旁边，",
++                "不该替玩家完成进度。普通服可关（原版旁观者本来就拿不到大部分成就）。");
++        block(sb, "copper-bulb-1gt", false, "铜灯 1gt 延迟",
++                "铜灯在放置/收到邻居更新时改为排一个 1gt 的 tick，而不是立即翻转。",
++                "对应 Carpet 的 copperBulb1gtDelay，旧版红石时序依赖它。",
++                "1.21 之后的装置一般不需要；做旧图纸时打开。");
++        block(sb, "renewable-sponges", false, "可再生海绵",
++                "普通守卫者被闪电击中后转化为远古守卫者。",
++                "对应 Leaves 的 Renewable sponges，用于海绵农场。",
++                "不需要海绵农场时保持关闭。");
++        block(sb, "villager-infinite-discounts", false, "无限交易折扣",
++                "正向声望在读取时不再受 max 上限与每日衰减限制，折扣不会掉回原价。",
++                "对应 Leaves 的 Villager infinite discounts。只影响读取，不改全局枚举，",
++                "关闭开关即刻恢复原版表现。");
++        block(sb, "shared-villager-discounts", false, "村民折扣共享",
++                "同一村民的 MAJOR_POSITIVE 声望在全部玩家之间共享。",
++                "对应 Leaves 的 Shared villager discounts；负面声望仍各自独立，避免连坐。",
++                "多人服常用；单人服无意义。");
++        block(sb, "spider-jockeys-gapple", false, "蜘蛛骑士掉金苹果",
++                "蜘蛛骑士死亡时按概率掉落附魔金苹果（概率用 -Doneiric.spider-jockeys-chance 调，默认 0.05）。",
++                "对应 Leaves 的 Spider jockeys drop gapples。",
++                "不需要这条掉落时保持关闭。");
++        block(sb, "avoid-anvil-too-expensive", false, "铁砧不显示过于昂贵",
++                "铁砧不再因为累计惩罚达到上限而拒绝工作。",
++                "对应 Leaves 的 Avoid anvil too expensive；非法/不可修复组合仍然拒绝。",
++                "需要反复修复同一件装备时打开。");
++        block(sb, "spawn-invulnerable-time", false, "出生无敌时间",
++                "玩家出生后的 60 tick 内免疫伤害。",
++                "对应 Leaves 的 Spawn invulnerable time，防止登录瞬间被装置或怪物秒杀。",
++                "生电服玩家常年挂机，建议打开。");
++        block(sb, "keep-leash-on-firework", false, "烟花不断拴绳",
++                "使用烟花推进时不再断开拴绳（旧版行为）。",
++                "对应 Leaves 的 Old leash behavior when use firework。",
++                "做拴绳运输装置时打开。");
++        block(sb, "allow-inf-nan-motion", false, "允许 Inf/NaN 旋转值",
++                "实体旋转值出现 Inf/NaN 时不再被丢弃。",
++                "对应 Leaves 的 Allow Inf NaN values in entity motions；部分老装置依赖该行为。",
++                "普通服务必保持关闭 —— 它会放行损坏数据。");
++        block(sb, "instant-block-updater", false, "即时方块更新器",
++                "用 1.19 之前的即时更新器替换当前的收集式更新器。",
++                "对应 Carpet-TIS-Addition 的 instantBlockUpdaterReintroduced。",
++                "会改变更新顺序与更新抑制行为，仅在复现老装置时打开。");
++        block(sb, "cce-update-suppression", false, "CCE 更新抑制",
++                "潜影盒读取红石信号时用容器路径而非方块实体路径，使特定更新抑制生效。",
++                "对应 Leaves 的 CCE update suppression。",
++                "需要该抑制特性时打开；否则保持关闭。");
++        block(sb, "sound-update-suppression", false, "音效更新抑制",
++                "监守者/幽匿感测体在非感测体方块上判定激活时抛出更新抑制异常。",
++                "对应 Leaves 的 Sound update suppression。",
++                "需要该抑制特性时打开。");
++        block(sb, "tripwire-hook-duplicate", false, "绊线钩复制",
++                "末地传送门平台生成时按旧版逻辑保留绊线钩掉落。",
++                "对应 Leaves 的 Tripwire behavior modifier（配合 -Doneiric.tripwire-behavior 选版本）。",
++                "做绊线复制时打开。");
++        block(sb, "projectile-tick-order", false, "抛射物 tick 顺序（旧版）",
++                "抛射物按旧版顺序 tick（先移动后判定命中）。",
++                "对应 Leaves 的 Old Throwable Projectile tick order。",
++                "老式炮台/投掷装置需要时打开。");
++        block(sb, "tnt-wet-no-item-damage", false, "湿 TNT 不伤掉落物",
++                "水中爆炸的 TNT 不再摧毁掉落物实体。",
++                "对应 Leaves 的 Old wet tnt explode behavior。",
++                "做水下爆破时打开。");
++        block(sb, "old-projectile-explosion", false, "抛射物爆炸（旧版）",
++                "抛射物引发的爆炸按旧版判定处理。",
++                "对应 Leaves 的 Old projectile explosion behavior。",
++                "需要复现旧版爆炸行为时打开。");
++        block(sb, "anvil-destroy-items", false, "铁砧可砸掉物品",
++                "落下的铁砧可以摧毁地上的掉落物实体。",
++                "对应 Leaves 的 Allow anvil destroy item entities。",
++                "做铁砧压物品装置时打开。");
++        block(sb, "old-minecart-motion", false, "矿车运动（旧版）",
++                "矿车按旧版公式计算加速度与摩擦。",
++                "对应 Leaves 的 Old minecart motion behavior。",
++                "老式矿车运输线需要时打开。");
++        block(sb, "old-zombie-reinforcement", false, "僵尸增援（旧版）",
++                "僵尸增援按旧版判定（召唤条件与概率）。",
++                "对应 Leaves 的 Old zombie reinforcement。",
++                "复现旧版刷怪行为时打开。");
++        block(sb, "old-zombie-piglin-drop", false, "僵尸猪灵掉落（旧版）",
++                "僵尸猪灵按旧版掉落表掉落。",
++                "对应 Leaves 的 Old zombie piglin drop behavior。",
++                "复现旧版掉落时打开。");
++        block(sb, "old-raid-behavior", false, "袭击行为（旧版）",
++                "袭击波次与不祥之兆的处理按旧版。",
++                "对应 Leaves 的 Old raid behavior。",
++                "复现旧版袭击时打开。");
++        block(sb, "disable-vault-blacklist", false, "关闭试炼密匙黑名单",
++                "试炼密室宝库不再对已领取过的玩家设黑名单。",
++                "对应 Leaves 的 Disable vault blacklist，便于反复测试同一宝库。",
++                "普通服保持关闭（会影响平衡）。");
++        block(sb, "elytra-no-chunk-load", false, "鞘翅不加载区块",
++                "鞘翅飞行时不再因速度过快而加载前方区块。",
++                "对应 Leaves 的 Elytra aeronautics no chunk load。",
++                "仅在明确知道后果时打开 —— 会让玩家飞进未加载区域。");
++        block(sb, "optimized-dragon-respawn", false, "优化末影龙重生",
++                "末影龙重生流程改为更快的实现。",
++                "对应 Leaves 的 Optimized dragon respawn。",
++                "屠龙农场可用；普通服无所谓。");
++        block(sb, "flatten-triangular", false, "扁平三角分布",
++                "随机数三角分布改为扁平分布。",
++                "对应 Carpet 的 flattenTriangularDistribution，改变随机物品/生物的概率分布。",
++                "只在装置按该分布设计时打开。");
+         block(sb, "mc-technical-mode", true, "技术模式",
+                 "打开一组生电向的细节调整（例如漏斗不进入冷却）。",
+                 "原版生电玩家常用的行为集合，集中在一个开关里便于整体切换。",
+diff --git a/src/main/java/net/minecraft/core/dispenser/ShearsDispenseItemBehavior.java b/src/main/java/net/minecraft/core/dispenser/ShearsDispenseItemBehavior.java
+index 624df8e8dbf0922c9403d951967312128866515d..7aff85e866db27a4ed3b5bd31a8104aa3082d90f 100644
+--- a/src/main/java/net/minecraft/core/dispenser/ShearsDispenseItemBehavior.java
++++ b/src/main/java/net/minecraft/core/dispenser/ShearsDispenseItemBehavior.java
+@@ -65,7 +65,12 @@ public class ShearsDispenseItemBehavior extends OptionalDispenseItemBehavior {
+ 
+             this.setSuccess(ShearsDispenseItemBehavior.tryShearBeehive(worldserver, blockposition) || ShearsDispenseItemBehavior.tryShearLivingEntity(worldserver, blockposition, bukkitBlock, craftItem)); // CraftBukkit
+             if (this.isSuccess()) {
+-                stack.hurtAndBreak(1, worldserver, (ServerPlayer) null, (item) -> {
++                // Oneiric - Carpet shearsInDispenserCanZeroAmount：耐久扣完立即补回，等价于不消耗。
++                stack.hurtAndBreak(1, worldserver, (ServerPlayer) null, (broken) -> {
++                    // Oneiric - 耐久见底时把外层堆叠补回 1 个，等价于「发射器里的剪刀不消耗」。
++                    if (org.leavesmc.leaves.LeavesConfig.modify.oldMC.shearsInDispenserCanZeroAmount) {
++                        stack.grow(1);
++                    }
+                 });
+             }
+         }
+diff --git a/src/main/java/net/minecraft/server/PlayerAdvancements.java b/src/main/java/net/minecraft/server/PlayerAdvancements.java
+index 862a4bf003b7f810fb57dbcd150a1417c902b633..8f974949ce44910f40be2bd03b6f493261e3d620 100644
+--- a/src/main/java/net/minecraft/server/PlayerAdvancements.java
++++ b/src/main/java/net/minecraft/server/PlayerAdvancements.java
+@@ -221,6 +221,11 @@ public class PlayerAdvancements {
+     }
+ 
+     public boolean award(AdvancementHolder advancement, String criterionName) {
++        // Oneiric - 旁观者模式不获得成就（Leaves: Spectator dont get Advancement）
++        if (org.leavesmc.leaves.LeavesConfig.modify.spectatorDontGetAdvancement
++            && this.player.gameMode.getGameModeForPlayer() == net.minecraft.world.level.GameType.SPECTATOR) {
++            return false;
++        }
+         boolean flag = false;
+         AdvancementProgress advancementprogress = this.getOrStartProgress(advancement);
+         boolean flag1 = advancementprogress.isDone();
+diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
+index 0e5c45aa79d6070f2b6d830c28eea67327c80113..6916b2c6b5751636a7a4c632759d0a3a258e9771 100644
+--- a/src/main/java/net/minecraft/world/entity/Entity.java
++++ b/src/main/java/net/minecraft/world/entity/Entity.java
+@@ -5720,7 +5720,9 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+     }
+ 
+     public void setYRot(float yaw) {
+-        if (!Float.isFinite(yaw)) {
++        // Oneiric - 允许 Inf/NaN 旋转值（Leaves: Allow Inf NaN values in entity motions）。
++        // 1.21.1 的 push/setDeltaMovement 本身没有有限性检查，只有这里会丢弃。
++        if (!org.leavesmc.leaves.LeavesConfig.modify.oldMC.allowInfNanMotionValues && !Float.isFinite(yaw)) {
+             Util.logAndPauseIfInIde("Invalid entity rotation: " + yaw + ", discarding.");
+         } else {
+             this.yRot = yaw;
+@@ -5732,7 +5734,9 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+     }
+ 
+     public void setXRot(float pitch) {
+-        if (!Float.isFinite(pitch)) {
++        // Oneiric - 允许 Inf/NaN 旋转值（Leaves: Allow Inf NaN values in entity motions）。
++        // 1.21.1 的 push/setDeltaMovement 本身没有有限性检查，只有这里会丢弃。
++        if (!org.leavesmc.leaves.LeavesConfig.modify.oldMC.allowInfNanMotionValues && !Float.isFinite(pitch)) {
+             Util.logAndPauseIfInIde("Invalid entity rotation: " + pitch + ", discarding.");
+         } else {
+             this.xRot = pitch;
+diff --git a/src/main/java/net/minecraft/world/entity/ai/gossip/GossipContainer.java b/src/main/java/net/minecraft/world/entity/ai/gossip/GossipContainer.java
+index c7f012674361a323c1efeca4660cd3f46d308ee1..d0bc393b08ff263eba7c99f27a87d92e6f84b2a1 100644
+--- a/src/main/java/net/minecraft/world/entity/ai/gossip/GossipContainer.java
++++ b/src/main/java/net/minecraft/world/entity/ai/gossip/GossipContainer.java
+@@ -115,6 +115,34 @@ public class GossipContainer {
+ 
+     public int getReputation(UUID target, Predicate<GossipType> gossipTypeFilter) {
+         GossipContainer.EntityGossips entityGossips = this.gossips.get(target);
++        // Oneiric - 村民折扣全服共享（Leaves: Shared villager discounts）。
++        // 只对 MAJOR_POSITIVE 生效：打折是"全体玩家对同一村民的共同印象"，
++        // 负面声望仍然各自独立，避免恶意刷负分连坐。
++        if (org.leavesmc.leaves.LeavesConfig.modify.sharedVillagerDiscounts
++            && gossipTypeFilter.test(GossipType.MAJOR_POSITIVE)) {
++            int otherRep = 0;
++            if (entityGossips != null) {
++                otherRep = entityGossips.weightedValue(v -> gossipTypeFilter.test(v) && v != GossipType.MAJOR_POSITIVE);
++            }
++            int majorPositiveRep = this.gossips.values().stream()
++                .mapToInt(a -> a.weightedValue(v -> v == GossipType.MAJOR_POSITIVE))
++                .sum();
++            return otherRep + Math.min(majorPositiveRep, GossipType.MAJOR_POSITIVE.max * GossipType.MAJOR_POSITIVE.weight);
++        }
++        // Oneiric - 无限交易折扣（Leaves: Villager infinite discounts）。
++        //
++        // Ore-doubling 之外的另一个用途：生电服常年和同一批村民交易，原版的
++        // max 上限与每日衰减会让折扣「掉回去」。这里不改 GossipType 枚举本身
++        // （那是全局状态，开关关闭后无法恢复，还会波及所有村民），
++        // 只在读取时给正向声望抬高上限 —— 关闭开关即刻恢复原版表现。
++        if (org.leavesmc.leaves.LeavesConfig.modify.oldMC.villagerInfiniteDiscounts && entityGossips != null) {
++            final int base = entityGossips.weightedValue(gossipTypeFilter);
++            if (base <= 0) {
++                return base;
++            }
++            final int uncapped = entityGossips.weightedValue(v -> gossipTypeFilter.test(v) && v != GossipType.MAJOR_NEGATIVE && v != GossipType.MINOR_NEGATIVE);
++            return Math.max(base, uncapped);
++        }
+         return entityGossips != null ? entityGossips.weightedValue(gossipTypeFilter) : 0;
+     }
+ 
+@@ -185,6 +213,7 @@ public class GossipContainer {
+     public static class EntityGossips {
+         final Object2IntMap<GossipType> entries = new Object2IntOpenHashMap<>();
+ 
++
+         public int weightedValue(Predicate<GossipType> gossipTypeFilter) {
+             // Paper start - Perf: Remove streams from hot code
+             int weight = 0;
+diff --git a/src/main/java/net/minecraft/world/entity/decoration/ArmorStand.java b/src/main/java/net/minecraft/world/entity/decoration/ArmorStand.java
+index c292f58ba4b29395484dbbf8591e455f449581d8..a90f0a0e7b4126ca6996686afe2f44cce50e7390 100644
+--- a/src/main/java/net/minecraft/world/entity/decoration/ArmorStand.java
++++ b/src/main/java/net/minecraft/world/entity/decoration/ArmorStand.java
+@@ -392,6 +392,13 @@ public class ArmorStand extends LivingEntity {
+                         return InteractionResult.SUCCESS;
+                     }
+                 } else {
++                    // Oneiric - 潜行手持木棍右键切换盔甲架手臂显示（Leaves: Stick can change ArmorStand arm status）
++                    if (org.leavesmc.leaves.LeavesConfig.modify.stickChangeArmorStandArmStatus
++                        && itemstack.is(Items.STICK) && player.isShiftKeyDown()) {
++                        this.setShowArms(!this.isShowArms());
++                        return InteractionResult.FAIL;
++                    }
++
+                     if (this.isDisabled(enumitemslot)) {
+                         return InteractionResult.FAIL;
+                     }
+diff --git a/src/main/java/net/minecraft/world/entity/monster/Guardian.java b/src/main/java/net/minecraft/world/entity/monster/Guardian.java
+index 8acc3c08c10a82cfd7006308ee2425d330e348d9..ec14e1dced2f0be897d8cfd44be8c5b6c9405b90 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/Guardian.java
++++ b/src/main/java/net/minecraft/world/entity/monster/Guardian.java
+@@ -345,6 +345,28 @@ public class Guardian extends Monster {
+ 
+     }
+ 
++    // Oneiric - 可再生的海绵：普通守卫者被闪电击中后转化为远古守卫者（Leaves: Renewable sponges）
++    @Override
++    public void thunderHit(net.minecraft.server.level.ServerLevel level, net.minecraft.world.entity.LightningBolt lightning) {
++        if (!org.leavesmc.leaves.LeavesConfig.modify.oldMC.renewableSponges
++            || this.isRemoved() || this instanceof ElderGuardian) {
++            super.thunderHit(level, lightning);
++            return;
++        }
++        ElderGuardian elder = new ElderGuardian(net.minecraft.world.entity.EntityType.ELDER_GUARDIAN, this.level());
++        // Oneiric - 1.21.1 用 moveTo（1.21.2 起才改名 snapTo），生成原因枚举叫 MobSpawnType。
++        elder.moveTo(this.getX(), this.getY(), this.getZ(), this.getYRot(), this.getXRot());
++        elder.finalizeSpawn(level, level.getCurrentDifficultyAt(elder.blockPosition()),
++            net.minecraft.world.entity.MobSpawnType.CONVERSION, null);
++        elder.setNoAi(this.isNoAi());
++        if (this.hasCustomName()) {
++            elder.setCustomName(this.getCustomName());
++            elder.setCustomNameVisible(this.isCustomNameVisible());
++        }
++        this.level().addFreshEntity(elder);
++        this.discard();
++    }
++
+     private static class GuardianMoveControl extends MoveControl {
+ 
+         private final Guardian guardian;
+diff --git a/src/main/java/net/minecraft/world/entity/monster/Skeleton.java b/src/main/java/net/minecraft/world/entity/monster/Skeleton.java
+index ba593c6f97a463f9b2fd0f726ab6dc8a29abd0b2..e6506771d92908ded313f7974962e6175b1bd352 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/Skeleton.java
++++ b/src/main/java/net/minecraft/world/entity/monster/Skeleton.java
+@@ -152,4 +152,16 @@ public class Skeleton extends AbstractSkeleton {
+     public boolean isControllable() {
+         return this.level().purpurConfig.skeletonControllable;
+     }
++
++    // Oneiric - 蜘蛛骑士掉落附魔金苹果（Leaves: Spider jockeys drop gapples）
++    @Override
++    protected void dropFromLootTable(net.minecraft.world.damagesource.DamageSource damageSource, boolean causedByPlayer) {
++        super.dropFromLootTable(damageSource, causedByPlayer);
++        if (org.leavesmc.leaves.LeavesConfig.modify.spiderJockeysDropGapples > 0.0D
++            && this.getRootVehicle().getType() == net.minecraft.world.entity.EntityType.SPIDER
++            && this.random.nextDouble() < org.leavesmc.leaves.LeavesConfig.modify.spiderJockeysDropGapples) {
++            // Oneiric - 1.21.1 的 spawnAtLocation 只有 (ItemStack) 重载。
++            this.spawnAtLocation(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.ENCHANTED_GOLDEN_APPLE));
++        }
++    }
+ }
+diff --git a/src/main/java/net/minecraft/world/entity/monster/Spider.java b/src/main/java/net/minecraft/world/entity/monster/Spider.java
+index fabc7f2e546448f518e35c74a066cc9535f91bcd..3f9c80f4b49d8c10ae2d24abfc72aac5240155fc 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/Spider.java
++++ b/src/main/java/net/minecraft/world/entity/monster/Spider.java
+@@ -255,4 +255,16 @@ public class Spider extends Monster {
+     public boolean isControllable() {
+         return this.level().purpurConfig.spiderControllable;
+     }
++
++    // Oneiric - 蜘蛛骑士掉落附魔金苹果（Leaves: Spider jockeys drop gapples）
++    @Override
++    protected void dropFromLootTable(net.minecraft.world.damagesource.DamageSource damageSource, boolean causedByPlayer) {
++        super.dropFromLootTable(damageSource, causedByPlayer);
++        if (org.leavesmc.leaves.LeavesConfig.modify.spiderJockeysDropGapples > 0.0D
++            && this.hasPassenger(entity -> entity.getType() == net.minecraft.world.entity.EntityType.SKELETON)
++            && this.random.nextDouble() < org.leavesmc.leaves.LeavesConfig.modify.spiderJockeysDropGapples) {
++            // Oneiric - 1.21.1 的 spawnAtLocation 只有 (ItemStack) 重载。
++            this.spawnAtLocation(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.ENCHANTED_GOLDEN_APPLE));
++        }
++    }
+ }
+diff --git a/src/main/java/net/minecraft/world/entity/projectile/Snowball.java b/src/main/java/net/minecraft/world/entity/projectile/Snowball.java
+index 2b4d206c0d31ba38d7b2af654bd420e85145d441..c4529c69abd603d0ceaa8218c747a0195dde9193 100644
+--- a/src/main/java/net/minecraft/world/entity/projectile/Snowball.java
++++ b/src/main/java/net/minecraft/world/entity/projectile/Snowball.java
+@@ -61,6 +61,14 @@ public class Snowball extends ThrowableItemProjectile {
+         int i = entity instanceof Blaze ? 3 : 0;
+ 
+         entity.hurt(this.damageSources().thrown(this, this.getOwner()), (float) i);
++        // Oneiric - 雪球可以击退玩家（Leaves: Make snowball and egg can knockback player）。
++        // 原版雪球对玩家只造成 0 伤害、不触发击退，生电里常用它做「无伤击退」。
++        if (org.leavesmc.leaves.LeavesConfig.modify.snowballAndEggCanKnockback
++            && entity instanceof net.minecraft.server.level.ServerPlayer player) {
++            player.hurt(this.damageSources().thrown(this, this.getOwner()), 0.0000001F);
++            player.knockback(0.4000000059604645D, this.getX() - player.getX(), this.getZ() - player.getZ(),
++                this, io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.DAMAGE);
++        }
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/entity/projectile/ThrownEgg.java b/src/main/java/net/minecraft/world/entity/projectile/ThrownEgg.java
+index dbd60cc8c39f5d2d4c77e2de4f2567e7fa456cd2..4513afbd310b2f606b3727d4ef50e58f358626fe 100644
+--- a/src/main/java/net/minecraft/world/entity/projectile/ThrownEgg.java
++++ b/src/main/java/net/minecraft/world/entity/projectile/ThrownEgg.java
+@@ -50,6 +50,13 @@ public class ThrownEgg extends ThrowableItemProjectile {
+     protected void onHitEntity(EntityHitResult entityHitResult) {
+         super.onHitEntity(entityHitResult);
+         entityHitResult.getEntity().hurt(this.damageSources().thrown(this, this.getOwner()), 0.0F);
++        // Oneiric - 鸡蛋可以击退玩家（Leaves: Make snowball and egg can knockback player）
++        if (org.leavesmc.leaves.LeavesConfig.modify.snowballAndEggCanKnockback
++            && entityHitResult.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
++            player.hurt(this.damageSources().thrown(this, this.getOwner()), 0.0000001F);
++            player.knockback(0.4000000059604645D, this.getX() - player.getX(), this.getZ() - player.getZ(),
++                this, io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.DAMAGE);
++        }
+     }
+ 
+     @Override
+diff --git a/src/main/java/net/minecraft/world/inventory/AnvilMenu.java b/src/main/java/net/minecraft/world/inventory/AnvilMenu.java
+index 1bef008a036b3e3fc25d65e6d1a616d0f62d05c2..d4a0d06adc93be8a4a0a8859fc5cd7427d78a53f 100644
+--- a/src/main/java/net/minecraft/world/inventory/AnvilMenu.java
++++ b/src/main/java/net/minecraft/world/inventory/AnvilMenu.java
+@@ -365,7 +365,12 @@ public class AnvilMenu extends ItemCombinerMenu {
+             }
+             // Purpur end - Anvil API
+ 
+-            if (this.cost.get() >= this.maximumRepairCost && !this.player.getAbilities().instabuild) { // CraftBukkit
++            // Oneiric - 铁砧不再显示「过于昂贵」（Leaves: Avoid anvil too expensive）。
++            // 仍然拒绝 DEFAULT_DENIED_COST（-1），那代表非法/不可修复组合。
++            if (this.cost.get() >= this.maximumRepairCost
++                && (!org.leavesmc.leaves.LeavesConfig.modify.avoidAnvilTooExpensive
++                    || this.cost.get() == AnvilMenu.DEFAULT_DENIED_COST)
++                && !this.player.getAbilities().instabuild) { // CraftBukkit
+                 itemstack1 = ItemStack.EMPTY;
+             }
+ 
+diff --git a/src/main/java/net/minecraft/world/level/block/state/BlockBehaviour.java b/src/main/java/net/minecraft/world/level/block/state/BlockBehaviour.java
+index d0109633e8bdf109cfc9178963d7b6cf92f8b189..6afb7b08dc331c8b5a19bfa579e921639ffdb660 100644
+--- a/src/main/java/net/minecraft/world/level/block/state/BlockBehaviour.java
++++ b/src/main/java/net/minecraft/world/level/block/state/BlockBehaviour.java
+@@ -1099,6 +1099,13 @@ public abstract class BlockBehaviour implements FeatureElement {
+         }
+ 
+         public PushReaction getPistonPushReaction() {
++            // Oneiric - 紫水晶母岩可被活塞推动（Leaves: Movable Budding Amethyst）。
++            // 1.21.1 的 pushReaction 在注册时固化在 BlockState 上，Block 侧没有可覆写的方法，
++            // 所以统一在这一处（所有活塞判定都经过它，包括未展开的 PistonStructureResolver）做例外。
++            if (org.leavesmc.leaves.LeavesConfig.modify.movableBuddingAmethyst
++                && this.getBlock() instanceof net.minecraft.world.level.block.BuddingAmethystBlock) {
++                return PushReaction.NORMAL;
++            }
+             return !this.isDestroyable() ? PushReaction.BLOCK : this.pushReaction; // Paper - Protect Bedrock and End Portal/Frames from being destroyed
+         }
+ 
+diff --git a/src/main/java/org/leavesmc/leaves/LeavesConfig.java b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+index 9fa01aa0600c0c79635f68feb815b6027811b5e7..1e37f7da9643f7eaedf22dfa74e565bf0527c1ae 100644
+--- a/src/main/java/org/leavesmc/leaves/LeavesConfig.java
++++ b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+@@ -41,9 +41,128 @@ public class LeavesConfig {
+         public final boolean leavesPacketEvent = enabled("protocol-packet-event");
+     }
+ 
+-    /** 原版机制微调。字段名与 Leaves 保持一致，便于原样移植。 */
++    /**
++     * 原版机制微调。字段名与 Leaves 保持一致，便于原样移植。
++     *
++     * <p>这里的结构刻意对齐 Leaves 的 {@code LeavesConfig.ModifyConfig}：
++     * {@code oldMC.updater.*}、{@code oldMC.tripwire.*} 等嵌套层级都不改，
++     * 这样 Leaves 的补丁可以近乎原样落地，也方便日后对比上游。</p>
++     */
+     public static final class Modify {
+         public final HopperCounter hopperCounter = new HopperCounter();
++        public final OldMC oldMC = new OldMC();
++
++        // ── Carpet / 生电规则（逐条对应 Leaves 的 mc 补丁）────────────────
++
++        /** 剪刀右键可旋转红石元件（Carpet: shearsWrench）。 */
++        public final boolean redstoneShearsWrench = enabled("redstone-shears-wrench");
++        /** 紫水晶母岩可被活塞推动。 */
++        public final boolean movableBuddingAmethyst = enabled("movable-budding-amethyst");
++        /** 旁观者模式不获得成就。 */
++        public final boolean spectatorDontGetAdvancement = enabled("spectator-no-advancement");
++        /** 手持木棍潜行右键盔甲架可切换手臂显示。 */
++        public final boolean stickChangeArmorStandArmStatus = enabled("stick-armorstand");
++        /** 雪球与鸡蛋能击退玩家。 */
++        public final boolean snowballAndEggCanKnockback = enabled("snowball-and-egg-knockback");
++        /** 三角分布随机扁平化（Carpet: flattenTriangularDistribution）。 */
++        public final boolean flattenTriangularDistribution = enabled("flatten-triangular");
++        /** 鞘翅巡航不加载区块。 */
++        public final boolean enableNoChunkLoad = enabled("elytra-no-chunk-load");
++        /** 优化末影龙重生流程。 */
++        public final boolean optimizedDragonRespawn = enabled("optimized-dragon-respawn");
++        /** 铁砧不再显示「过于昂贵」。 */
++        public final boolean avoidAnvilTooExpensive = enabled("avoid-anvil-too-expensive");
++        /** 村民折扣全服共享。 */
++        public final boolean sharedVillagerDiscounts = enabled("shared-villager-discounts");
++
++        /**
++         * 蛛骑掉落附魔金苹果的概率。
++         *
++         * <p>Leaves 这里是 {@code double}（0 表示关闭）。我们保留这个形状，
++         * 用 {@code -Doneiric.spider-jockeys-chance=0.05} 调，开关本身只决定启用与否。</p>
++         */
++        public final double spiderJockeysDropGapples = enabled("spider-jockeys-gapple")
++            ? Double.parseDouble(System.getProperty("oneiric.spider-jockeys-chance", "0.05"))
++            : 0.0D;
++
++        /** 旧版 Minecraft 行为集合。 */
++        public static final class OldMC {
++            /** 铜灯 1gt 延迟。 */
++            public final boolean copperBulb1gt = enabled("copper-bulb-1gt");
++            /** 合成器 1gt 延迟。 */
++            public final boolean crafter1gt = enabled("crafter1gt");
++            /** 零 tick 作物。 */
++            public final boolean zeroTickPlants = enabled("zero-tick-plants");
++            /** 可再生的深板岩。 */
++            public final boolean renewableDeepslate = enabled("renewable-deepslate");
++            /** 可再生的海绵。 */
++            public final boolean renewableSponges = enabled("renewable-sponges");
++            /** 可再生的珊瑚。 */
++            public final boolean renewableCoral = enabled("renewable-coral");
++            /** 无限交易折扣。 */
++            public final boolean villagerInfiniteDiscounts = enabled("villager-infinite-discounts");
++            /** 蛛骑掉落金苹果。 */
++            public final boolean spiderJockeysDropGapples = enabled("spider-jockeys-gapple");
++            /** 铁砧可摧毁掉落物实体。 */
++            public final boolean allowAnvilDestroyItemEntities = enabled("anvil-destroy-items");
++            /** 关闭试炼密匙黑名单。 */
++            public final boolean disableVaultBlacklist = enabled("disable-vault-blacklist");
++            /** 僵尸增援（旧版）。 */
++            public final boolean oldZombieReinforcement = enabled("old-zombie-reinforcement");
++            /** 僵尸猪灵掉落（旧版）。 */
++            public final boolean oldZombiePiglinDrop = enabled("old-zombie-piglin-drop");
++            /** 袭击行为（旧版）。 */
++            public final boolean oldRaidBehavior = enabled("old-raid-behavior");
++            /** 矿车运动（旧版）。 */
++            public final boolean oldMinecartMotionBehavior = enabled("old-minecart-motion");
++            /** 抛射物 tick 顺序（旧版）。 */
++            public final boolean oldThrowableProjectileTickOrder = enabled("projectile-tick-order");
++            /** 湿 TNT 不伤害掉落物。 */
++            public final boolean tntWetExplosionNoItemDamage = enabled("tnt-wet-no-item-damage");
++            /** 抛射物爆炸行为（旧版）。 */
++            public final boolean oldProjectileExplosionBehavior = enabled("old-projectile-explosion");
++            /** 使用烟花时保持拴绳连接。 */
++            public final boolean keepLeashConnectWhenUseFirework = enabled("keep-leash-on-firework");
++            /** 允许实体运动出现 Inf/NaN。 */
++            public final boolean allowInfNanMotionValues = enabled("allow-inf-nan-motion");
++            /** 出生无敌时间（Leaves: spawn-invulnerable-time）。 */
++            public final boolean spawnInvulnerableTime = enabled("spawn-invulnerable-time");
++            /** 发射器里的剪刀不消耗耐久。 */
++            public final boolean shearsInDispenserCanZeroAmount = enabled("shears-in-dispenser-zero");
++
++            public final Updater updater = new Updater();
++            public final Tripwire tripwire = new Tripwire();
++
++            /** 方块更新器相关（Carpet-TIS-Addition 系）。 */
++            public static final class Updater {
++                /** 即时方块更新器（1.19 之前的行为）。 */
++                public final boolean instantBlockUpdaterReintroduced = enabled("instant-block-updater");
++                /** CCE 更新抑制。 */
++                public final boolean cceUpdateSuppression = enabled("cce-update-suppression");
++                /** 音效更新抑制。 */
++                public final boolean soundUpdateSuppression = enabled("sound-update-suppression");
++                /** 红石忽略向上更新。 */
++                public final boolean redstoneIgnoreUpwardsUpdate = enabled("redstone-ignore-upwards-update");
++                /** 旧版方块移除行为。 */
++                public final boolean oldBlockRemoveBehaviour = enabled("old-block-remove-behaviour");
++            }
++
++            /** 绊线相关。 */
++            public static final class Tripwire {
++                /** 拌线钩复制（旧版）。 */
++                public final boolean stringTripwireHookDuplicate = enabled("tripwire-hook-duplicate");
++                /** 绊线行为版本。 */
++                public final TripwireBehavior tripwireBehavior = TripwireBehavior.valueOf(
++                    System.getProperty("oneiric.tripwire-behavior", "MIXED"));
++            }
++
++            /** 绊线行为版本枚举。与 Leaves 同名，便于补丁原样落地。 */
++            public enum TripwireBehavior {
++                VANILLA_20,
++                VANILLA_21,
++                MIXED
++            }
++        }
+     }
+ 
+     /** 羊毛漏斗计数器。 */
+diff --git a/src/main/java/org/leavesmc/leaves/util/ShearsWrenchUtil.java b/src/main/java/org/leavesmc/leaves/util/ShearsWrenchUtil.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d8afb618eaf16f8c0b7eb50205a02d4def3aabd
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/util/ShearsWrenchUtil.java
+@@ -0,0 +1,159 @@
++package org.leavesmc.leaves.util;
++
++import net.minecraft.core.BlockPos;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.Util;
++import net.minecraft.world.InteractionHand;
++import net.minecraft.world.InteractionResult;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.item.context.UseOnContext;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.BaseRailBlock;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.ComparatorBlock;
++import net.minecraft.world.level.block.CrafterBlock;
++import net.minecraft.world.level.block.DispenserBlock;
++import net.minecraft.world.level.block.FenceGateBlock;
++import net.minecraft.world.level.block.HopperBlock;
++import net.minecraft.world.level.block.LeverBlock;
++import net.minecraft.world.level.block.LightningRodBlock;
++import net.minecraft.world.level.block.ObserverBlock;
++import net.minecraft.world.level.block.PoweredRailBlock;
++import net.minecraft.world.level.block.RailBlock;
++import net.minecraft.world.level.block.RepeaterBlock;
++import net.minecraft.world.level.block.TrapDoorBlock;
++import net.minecraft.world.level.block.piston.PistonBaseBlock;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.level.block.state.StateDefinition;
++import net.minecraft.world.level.block.state.properties.Property;
++import net.minecraft.world.level.block.state.properties.RailShape;
++import org.jetbrains.annotations.NotNull;
++import org.leavesmc.leaves.LeavesConfig;
++
++import java.util.Collection;
++
++import static net.minecraft.world.level.block.Block.UPDATE_KNOWN_SHAPE;
++
++/**
++ * Oneiric - 剪刀扳手：手持剪刀右键可旋转红石元件（对准的朝向属性）。
++ *
++ * <p>移植自 LeavesMC/Leaves（GPLv3），原作者 violetc。</p>
++ *
++ * <p><b>与 Leaves 的差异</b>：26.x 的元件清单里还有
++ * {@code CalibratedSculkSensorBlock}（1.21.2 才加入），1.21.1 没有这个方块，
++ * 因此从可旋转列表里去掉，其余判定与旋转逻辑保持一致。</p>
++ *
++ * <p>行为约定：只有主手或副手中的另一只手为空时才生效；红石元件处于通电/锁存
++ * 状态时拒绝旋转（原版调试棒也是这个语义），避免把装置状态搅乱。</p>
++ */
++public class ShearsWrenchUtil {
++
++    public static InteractionResult tryApplyRotate(UseOnContext context, BlockState blockState) {
++        Level level = context.getLevel();
++        BlockPos clickedPos = context.getClickedPos();
++        Block block = blockState.getBlock();
++        if (!LeavesConfig.modify.redstoneShearsWrench
++            || !(block instanceof ObserverBlock || block instanceof DispenserBlock || block instanceof PistonBaseBlock
++            || block instanceof HopperBlock || block instanceof RepeaterBlock || block instanceof ComparatorBlock
++            || block instanceof CrafterBlock || block instanceof LeverBlock || block instanceof net.minecraft.world.level.block.CocoaBlock
++            || block instanceof TrapDoorBlock || block instanceof FenceGateBlock || block instanceof LightningRodBlock
++            || block instanceof BaseRailBlock)) {
++            return null;
++        }
++        if (context.getPlayer() == null || !context.getPlayer().getItemInHand(invert(context.getHand())).isEmpty()) {
++            return null;
++        }
++        StateDefinition<@NotNull Block, @NotNull BlockState> blockstatelist = block.getStateDefinition();
++        Property<?> iblockstate;
++        if (block instanceof CrafterBlock) {
++            iblockstate = blockstatelist.getProperty("orientation");
++        } else if (block instanceof BaseRailBlock) {
++            iblockstate = blockstatelist.getProperty("shape");
++        } else {
++            iblockstate = blockstatelist.getProperty("facing");
++        }
++        Player player = context.getPlayer();
++
++        if (iblockstate == null || player == null) {
++            return InteractionResult.FAIL;
++        }
++
++        if (block instanceof BaseRailBlock) {
++            if (block instanceof RailBlock) {
++                if (blockState.getValue(RailBlock.SHAPE).isAscending()) {
++                    return InteractionResult.FAIL;
++                }
++            } else {
++                if (getNameHelper(blockState, PoweredRailBlock.POWERED).equals("true")) {
++                    return InteractionResult.FAIL;
++                }
++                if (blockState.getValue(PoweredRailBlock.SHAPE).isAscending()) {
++                    return InteractionResult.FAIL;
++                }
++            }
++        }
++
++        if (block instanceof PistonBaseBlock) {
++            if (getNameHelper(blockState, PistonBaseBlock.EXTENDED).equals("true")) {
++                return InteractionResult.FAIL;
++            }
++        }
++
++        if (block instanceof RepeaterBlock || block instanceof ComparatorBlock) {
++            if (getNameHelper(blockState, ComparatorBlock.POWERED).equals("true")) {
++                return InteractionResult.FAIL;
++            }
++            if (block instanceof RepeaterBlock) {
++                if (getNameHelper(blockState, RepeaterBlock.LOCKED).equals("true")) {
++                    return InteractionResult.FAIL;
++                }
++            }
++        }
++
++        if (block instanceof CrafterBlock) {
++            if (getNameHelper(blockState, CrafterBlock.CRAFTING).equals("true")) {
++                return InteractionResult.FAIL;
++            }
++        }
++
++        BlockState iblockdata1 = cycleState(blockState, iblockstate, player.isSecondaryUseActive());
++        level.setBlock(clickedPos, iblockdata1, Block.UPDATE_CLIENTS | UPDATE_KNOWN_SHAPE);
++        message(player, Component.translatable("item.minecraft.debug_stick.update", iblockstate.getName(), getNameHelper(iblockdata1, iblockstate)));
++        return InteractionResult.CONSUME;
++    }
++
++    private static InteractionHand invert(InteractionHand original) {
++        return original == InteractionHand.MAIN_HAND ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
++    }
++
++    private static <T extends Comparable<T>> BlockState cycleState(BlockState state, Property<@NotNull T> property, boolean inverse) {
++        // Oneiric - 1.21.1 的 Property#getPossibleValues 返回 Collection，不是 List。
++        Collection<T> possibleValues = property.getPossibleValues();
++        // Oneiric - 1.21.1 的 Collection 没有 getFirst()，用第一次迭代判别元素类型。
++        if (!possibleValues.isEmpty() && possibleValues.iterator().next() instanceof RailShape) {
++            boolean isRailBlock = state.getBlock() instanceof RailBlock;
++            possibleValues = possibleValues.stream().filter(possibleValue -> {
++                RailShape shape = (RailShape) possibleValue;
++                if (isRailBlock) {
++                    return !shape.isAscending();
++                }
++                return !shape.isAscending() && shape != RailShape.NORTH_EAST && shape != RailShape.NORTH_WEST
++                    && shape != RailShape.SOUTH_EAST && shape != RailShape.SOUTH_WEST;
++            }).toList();
++        }
++        return state.setValue(property, getRelative(possibleValues, state.getValue(property), inverse));
++    }
++
++    private static <T> T getRelative(Iterable<T> elements, T current, boolean inverse) {
++        return inverse ? Util.findPreviousInIterable(elements, current) : Util.findNextInIterable(elements, current);
++    }
++
++    private static void message(Player player, Component message) {
++        ((ServerPlayer) player).sendSystemMessage(message, true);
++    }
++
++    private static <T extends Comparable<T>> String getNameHelper(BlockState state, Property<@NotNull T> property) {
++        return property.getName(state.getValue(property));
++    }
++}

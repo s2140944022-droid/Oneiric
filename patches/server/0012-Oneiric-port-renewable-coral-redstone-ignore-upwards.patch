@@ -1,0 +1,2237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 04:11:44 +0800
+Subject: [PATCH] Oneiric: port renewable-coral, redstone-ignore-upwards,
+ ReplayMod photographer (Folia-adapted), update old-block-remove yml
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index 02aa5a80165e035575deb7eb2252e4f4da5f5ec3..37445d50789eac847d7b8074b595870f2fff3148 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -70,6 +70,9 @@ public final class OneiricConfig {
+             "protocol-servux-litematics",
+             "protocol-syncmatica",
+             "protocol-bladeren",
++            "replay-mod",
++            // ReplayMod 摄影师：/photographer 命令创建录制者，写 .mcpr 回放文件。
++            "replay-mod",
+             // 生电原版对齐（从旧 Oneiric 树移植，Leaves 系）：这两项默认开，因为它们是把
+             // Paper 的优化**退回原版语义**，而本项目的红线是「行为同原版」。
+             "vanilla-item-tick",
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index b0d8dc8730d63bcf73895e9ff07a6eb10e795547..1dd6752296275c5bfbbf2d8c691115a3d645f3f1 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -350,10 +350,10 @@ public final class OneiricYml {
+                 "合成器在 1 个游戏刻内完成合成，而不是 2gt。",
+                 "合成器时序影响部分自动合成装置的节拍。",
+                 "需要 1gt 合成节拍时打开。");
+-        block(sb, "redstone-trapdoor-connect", false, "红石连活板门",
+-                "红石线可以连接到活板门。",
+-                "原版红石线不连接活板门。部分紧凑布线依赖此行为。",
+-                "需要红石线直连活板门时打开。");
++        block(sb, "redstone-trapdoor-connect", false, "红石线 1.19 更新行为（旧开关名）",
++                "redstone-ignore-upwards-update 的旧开关名，效果完全等同（红石线部分）。",
++                "历史遗留命名：\"连活板门\"描述与实际效果相反，实际是红石线更新回退 1.19 行为。",
++                "统一用 redstone-ignore-upwards-update；本名保留兼容旧配置文件。");
+         block(sb, "no-tnt-place-update", false, "放置 TNT 不触发更新",
+                 "放置 TNT 时不触发相邻方块更新。",
+                 "减少放置 TNT 时的连锁更新，部分 TNT 装置需要。",
+@@ -505,14 +505,14 @@ public final class OneiricYml {
+                 "上游的珊瑚再生机制还没有移植到本核心，本开关当前不产生任何效果。",
+                 "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
+                 "现在改它没有作用；等实现落地后本行说明会更新。");
+-        block(sb, "redstone-ignore-upwards-update", false, "红石忽略向上更新（未实现）",
+-                "上游的红石向上更新抑制尚未移植，本开关当前不产生任何效果。",
+-                "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
+-                "现在改它没有作用。");
+-        block(sb, "old-block-remove-behaviour", false, "旧版方块移除（未实现）",
+-                "旧版方块移除行为涉及 30 余个方块类，尚未移植，本开关当前不产生任何效果。",
+-                "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
+-                "现在改它没有作用。");
++        block(sb, "redstone-ignore-upwards-update", false, "红石忽略向上更新",
++                "红石线/中继器/比较器不因支撑方块被移除而掉落（1.19～1.20.1 行为）。",
++                "对应 Carpet-TIS 的 redstoneIgnoreUpwardsUpdate；更新抑制装置依赖它。",
++                "redstone-trapdoor-connect 是它的旧开关名（保留兼容），任一开启即生效。");
++        block(sb, "old-block-remove-behaviour", false, "旧版方块移除（原生已具备）",
++                "本开关在 1.21.1 上无实际作用：方块移除走 onRemove 钩子是 1.21.1 的原生架构。",
++                "该规则只用于回退 1.21.2+ 的重构回归（onRemove 被改成 affectNeighborsAfterRemoval），本核心基于 1.21.1 从不存在该回归。",
++                "保留开关仅为配置兼容；改它没有作用。");
+         block(sb, "mc-technical-mode", true, "技术模式",
+                 "打开一组生电向的细节调整（例如漏斗不进入冷却）。",
+                 "原版生电玩家常用的行为集合，集中在一个开关里便于整体切换。",
+diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+index 9180f23529a31b6b0a5b38bb7cda3e32d487f691..31b6ea9c0d2327e1a91b035258f4bda912fbb2d9 100644
+--- a/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
++++ b/src/main/java/io/papermc/paper/plugin/manager/PaperEventManager.java
+@@ -41,6 +41,12 @@ class PaperEventManager {
+         if (listeners.length == 0) return;
+         // Leaf end - Skip event if no listeners
+ 
++        // Oneiric - 跳过摄影师的 PlayerEvent（Leaves replay api）：摄影师不是真玩家
++        if (event instanceof org.bukkit.event.player.PlayerEvent playerEvent
++            && playerEvent.getPlayer() instanceof org.leavesmc.leaves.replay.ServerPhotographer) {
++            return;
++        }
++
+         if (event.isAsynchronous() && this.server.isPrimaryThread()) {
+             throw new IllegalStateException(event.getEventName() + " may only be triggered asynchronously.");
+         } else if (!event.isAsynchronous() && !this.server.isPrimaryThread() && !this.server.isStopping()) {
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index a2e52b4718cc28cacda732bcbbf866e6c83b4b81..c97774dea55f4a41448e4ce95f42f8ff60ff5903 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1865,7 +1865,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     }
+ 
+     private ServerStatus.Players buildPlayerStatus() {
+-        List<ServerPlayer> list = new java.util.ArrayList<>(this.playerList.getPlayers()); // Folia - region threading
++        // Oneiric - 只算真实玩家（摄影师不计入列表 ping 样本）
++        List<ServerPlayer> list = new java.util.ArrayList<>(this.playerList.realPlayers); // Folia - region threading
+         int i = this.getMaxPlayers();
+ 
+         if (this.hidesOnlinePlayers()) {
+diff --git a/src/main/java/net/minecraft/server/PlayerAdvancements.java b/src/main/java/net/minecraft/server/PlayerAdvancements.java
+index 8f974949ce44910f40be2bd03b6f493261e3d620..5aea4ac8d6359a03086b6d2ded2e5f236bf2f2d5 100644
+--- a/src/main/java/net/minecraft/server/PlayerAdvancements.java
++++ b/src/main/java/net/minecraft/server/PlayerAdvancements.java
+@@ -226,6 +226,10 @@ public class PlayerAdvancements {
+             && this.player.gameMode.getGameModeForPlayer() == net.minecraft.world.level.GameType.SPECTATOR) {
+             return false;
+         }
++        // Oneiric - 摄影师不获得成就（Leaves: bot can't get advancement + and photographer）
++        if (this.player instanceof org.leavesmc.leaves.replay.ServerPhotographer) {
++            return false;
++        }
+         boolean flag = false;
+         AdvancementProgress advancementprogress = this.getOrStartProgress(advancement);
+         boolean flag1 = advancementprogress.isDone();
+diff --git a/src/main/java/net/minecraft/server/commands/OpCommand.java b/src/main/java/net/minecraft/server/commands/OpCommand.java
+index e7b444a10b244828827b3c66c53465206ea8e0ec..33869000383c3b83d6d491b42de78e0f61de4a9f 100644
+--- a/src/main/java/net/minecraft/server/commands/OpCommand.java
++++ b/src/main/java/net/minecraft/server/commands/OpCommand.java
+@@ -25,7 +25,7 @@ public class OpCommand {
+                             (context, builder) -> {
+                                 PlayerList playerList = context.getSource().getServer().getPlayerList();
+                                 return SharedSuggestionProvider.suggest(
+-                                    playerList.getPlayers()
++                                    playerList.realPlayers // Oneiric - 只列真实玩家
+                                         .stream()
+                                         .filter(player -> !playerList.isOp(player.getGameProfile()))
+                                         .map(player -> player.getGameProfile().getName()),
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+index 03568d65fc1b72d2c2658b7f5dcfba6ef6f0274a..4e79668795033a793e8df173f421233b7cc530b4 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -235,6 +235,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         io.papermc.paper.oneiric.OneiricYml.load(this.server.getWorldContainer().toPath());
+         io.papermc.paper.oneiric.OneiricCommand.register(); // Oneiric - /oneiric 状态命令
+         org.leavesmc.leaves.command.CounterCommand.register(); // Oneiric - /counter 羊毛漏斗计数器
++        org.leavesmc.leaves.command.PhotographerCommand.register(); // Oneiric - /photographer 回放摄影师
+         // Oneiric - 技术模式覆写（mc-technical-mode）。
+         //
+         // 必须在这里调用：此刻 Paper 配置已加载完成、各项 allow* 已被文件值填好，
+diff --git a/src/main/java/net/minecraft/server/level/ServerLevel.java b/src/main/java/net/minecraft/server/level/ServerLevel.java
+index b1868d089a35613477824636e21dcd68b3a53e99..9c5a2b7161b088a4cd87dd10c2950750ba8606b2 100644
+--- a/src/main/java/net/minecraft/server/level/ServerLevel.java
++++ b/src/main/java/net/minecraft/server/level/ServerLevel.java
+@@ -1714,6 +1714,9 @@ public class ServerLevel extends Level implements WorldGenLevel, ca.spottedleaf.
+         this.addPlayer(player);
+     }
+ 
++    // Oneiric - 真实玩家列表（摄影师/假人不计入；Leaves replay/bot API 同款）
++    public final java.util.List<ServerPlayer> realPlayers = new java.util.concurrent.CopyOnWriteArrayList<>();
++
+     private void addPlayer(ServerPlayer player) {
+         Entity entity = (Entity) this.getEntities().get(player.getUUID());
+ 
+@@ -2765,6 +2768,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ca.spottedleaf.
+             // ServerLevel.this.getChunkSource().addEntity(entity); // Paper - ignore and warn about illegal addEntity calls instead of crashing server; moved down below valid=true
+             if (entity instanceof ServerPlayer entityplayer) {
+                 ServerLevel.this.players.add(entityplayer);
++                // Oneiric - 摄影师不计入 realPlayers（Leaves replay API）
++                if (!(entityplayer instanceof org.leavesmc.leaves.replay.ServerPhotographer)) {
++                    ServerLevel.this.realPlayers.add(entityplayer);
++                }
+                 ServerLevel.this.updateSleepingPlayerList();
+             }
+ 
+@@ -2857,6 +2864,8 @@ public class ServerLevel extends Level implements WorldGenLevel, ca.spottedleaf.
+             ServerLevel.this.getChunkSource().removeEntity(entity);
+             if (entity instanceof ServerPlayer entityplayer) {
+                 ServerLevel.this.players.remove(entityplayer);
++                // Oneiric - 同步 realPlayers
++                ServerLevel.this.realPlayers.remove(entityplayer);
+                 ServerLevel.this.updateSleepingPlayerList();
+             }
+ 
+diff --git a/src/main/java/net/minecraft/server/level/ServerPlayer.java b/src/main/java/net/minecraft/server/level/ServerPlayer.java
+index 508dbd0702e792f14d14580c08644eec8cba2c81..83f82b2190ac2aadf5c8cda2b8080cbac0bff2ab 100644
+--- a/src/main/java/net/minecraft/server/level/ServerPlayer.java
++++ b/src/main/java/net/minecraft/server/level/ServerPlayer.java
+@@ -213,7 +213,7 @@ public class ServerPlayer extends net.minecraft.world.entity.player.Player imple
+     private static final AttributeModifier CREATIVE_ENTITY_INTERACTION_RANGE_MODIFIER = new AttributeModifier(ResourceLocation.withDefaultNamespace("creative_mode_entity_range"), 2.0D, AttributeModifier.Operation.ADD_VALUE);
+     public ServerGamePacketListenerImpl connection;
+     public final MinecraftServer server;
+-    public final ServerPlayerGameMode gameMode;
++    public ServerPlayerGameMode gameMode; // Oneiric - 去 final：摄影师要换成固定旁观模式的 GameMode
+     private final PlayerAdvancements advancements;
+     private final ServerStatsCounter stats;
+     private float lastRecordedHealthAndAbsorption = Float.MIN_VALUE;
+diff --git a/src/main/java/net/minecraft/server/players/PlayerList.java b/src/main/java/net/minecraft/server/players/PlayerList.java
+index 4fa953339736be1292409fb1094b4ca9ffc3a98a..0115d23e212f3cd8b7b4901f58c817374b764982 100644
+--- a/src/main/java/net/minecraft/server/players/PlayerList.java
++++ b/src/main/java/net/minecraft/server/players/PlayerList.java
+@@ -155,6 +155,8 @@ public abstract class PlayerList {
+     private boolean allowCommandsForAllPlayers;
+     private static final boolean ALLOW_LOGOUTIVATOR = false;
+     private int sendAllPlayerInfoIn;
++    // Oneiric - 真实玩家列表（摄影师/假人不计入；Leaves replay/bot API 同款）
++    public final java.util.List<ServerPlayer> realPlayers = new java.util.concurrent.CopyOnWriteArrayList<>();
+ 
+     // CraftBukkit start
+     private CraftServer cserver;
+@@ -429,6 +431,7 @@ public abstract class PlayerList {
+ 
+         // entityplayer.connection.send(ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(this.players)); // CraftBukkit - replaced with loop below
+         this.players.add(player);
++        this.realPlayers.add(player); // Oneiric - 真实玩家列表
+         this.playersByName.put(player.getScoreboardName().toLowerCase(java.util.Locale.ROOT), player); // Spigot
+         this.playersByUUID.put(player.getUUID(), player);
+         // this.broadcastAll(ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(List.of(entityplayer))); // CraftBukkit - replaced with loop below
+@@ -482,6 +485,11 @@ public abstract class PlayerList {
+                 continue;
+             }
+ 
++            // Oneiric - 跳过摄影师（Leaves replay api）
++            if (entityplayer1 instanceof org.leavesmc.leaves.replay.ServerPhotographer) {
++                continue;
++            }
++
+             onlinePlayers.add(entityplayer1); // Paper - Use single player info update packet on join
+         }
+         // Paper start - Use single player info update packet on join
+@@ -520,6 +528,137 @@ public abstract class PlayerList {
+         }
+         // Paper end - Send empty chunk
+     }
++    // Oneiric start - 摄影师放置/移除（移植自 LeavesMC/Leaves 1.21.1, GPLv3；Folia 区域线程适配）
++    //
++    // 与 Leaves 的差异：Leaves 的 placeNewPhotographer 从命令上下文同步调用；
++    // Folia 里实体/玩家注册必须在目标位置的 region 线程上执行 —— 调用方
++    // （ServerPhotographer.createPhotographer）负责通过 RegionScheduler 调度到这里。
++    //
++    // 放置流程镜像 Folia 自己的 placeNewPlayer（region 线程段），去掉：
++    //   - 数据加载（loadGameTypes 传 null）、出生点事件、加入消息、
++    //   - connections 列表注册（假连接不被 tick，避免 keepalive 超时）。
++    public void placeNewPhotographer(Connection connection, org.leavesmc.leaves.replay.ServerPhotographer player, ServerLevel worldserver1, Location location) {
++        player.isRealPlayer = true; // Paper
++        player.loginTime = System.currentTimeMillis(); // Paper
++
++        player.setServerLevel(worldserver1);
++        player.spawnIn(worldserver1);
++        player.gameMode.setLevel((ServerLevel) player.level());
++        player.setPosRaw(location.getX(), location.getY(), location.getZ());
++        player.setRot(location.getYaw(), location.getPitch());
++
++        LevelData worlddata = worldserver1.getLevelData();
++
++        player.loadGameTypes(null);
++        ServerGamePacketListenerImpl playerconnection = new org.leavesmc.leaves.replay.ServerPhotographerPacketListenerImpl(this.server, connection, player);
++        GameRules gamerules = worldserver1.getGameRules();
++        boolean flag = gamerules.getBoolean(GameRules.RULE_DO_IMMEDIATE_RESPAWN);
++        boolean flag1 = gamerules.getBoolean(GameRules.RULE_REDUCEDDEBUGINFO);
++        boolean flag2 = gamerules.getBoolean(GameRules.RULE_LIMITED_CRAFTING);
++
++        playerconnection.send(new ClientboundLoginPacket(player.getId(), worlddata.isHardcore(), this.server.levelKeys(), this.getMaxPlayers(), worldserver1.spigotConfig.viewDistance, worldserver1.spigotConfig.simulationDistance, flag1, !flag, flag2, player.createCommonSpawnInfo(worldserver1), this.server.enforceSecureProfile()));
++        player.getBukkitEntity().sendSupportedChannels(); // CraftBukkit
++        playerconnection.send(new ClientboundChangeDifficultyPacket(worlddata.getDifficulty(), worlddata.isDifficultyLocked()));
++        playerconnection.send(new ClientboundPlayerAbilitiesPacket(player.getAbilities()));
++        playerconnection.send(new ClientboundSetCarriedItemPacket(player.getInventory().selected));
++        playerconnection.send(new ClientboundUpdateRecipesPacket(this.server.getRecipeManager().getOrderedRecipes()));
++        this.sendPlayerPermissionLevel(player);
++        player.getStats().markAllDirty();
++        player.getRecipeBook().sendInitialRecipeBook(player);
++        this.server.invalidateStatus();
++
++        playerconnection.teleport(player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot());
++        ServerStatus serverping = this.server.getStatus();
++
++        if (serverping != null) {
++            player.sendServerStatus(serverping);
++        }
++
++        this.players.add(player);
++        this.playersByName.put(player.getScoreboardName().toLowerCase(java.util.Locale.ROOT), player); // Spigot
++        this.playersByUUID.put(player.getUUID(), player);
++
++        player.supressTrackerForLogin = true;
++        worldserver1.addNewPlayer(player);
++        this.server.getCustomBossEvents().onPlayerConnect(player);
++        CraftPlayer bukkitPlayer = player.getBukkitEntity();
++
++        player.containerMenu.transferTo(player.containerMenu, bukkitPlayer);
++        if (!player.connection.isAcceptingMessages()) {
++            return;
++        }
++
++        final List<ServerPlayer> onlinePlayers = Lists.newArrayListWithExpectedSize(this.players.size() - 1);
++        for (int i = 0; i < this.players.size(); ++i) {
++            ServerPlayer entityplayer1 = this.players.get(i);
++
++            if (entityplayer1 == player) {
++                continue;
++            }
++
++            if (!bukkitPlayer.canSee(entityplayer1.getBukkitEntity())) {
++                continue;
++            }
++
++            onlinePlayers.add(entityplayer1);
++        }
++        if (!onlinePlayers.isEmpty()) {
++            player.connection.send(ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(onlinePlayers, player));
++        }
++
++        player.sentListPacket = true;
++        player.supressTrackerForLogin = false;
++        ((ServerLevel) player.level()).getChunkSource().chunkMap.addEntity(player);
++
++        this.sendLevelInfo(player, worldserver1);
++
++        if (player.level() == worldserver1 && !worldserver1.players().contains(player)) {
++            worldserver1.addNewPlayer(player);
++            this.server.getCustomBossEvents().onPlayerConnect(player);
++        }
++
++        this.sendActivePlayerEffects(player);
++
++        if (player.isDeadOrDying()) {
++            net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> plains = worldserver1.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
++                .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
++            player.connection.send(new net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket(
++                new net.minecraft.world.level.chunk.EmptyLevelChunk(worldserver1, player.chunkPosition(), plains),
++                worldserver1.getLightEngine(), (java.util.BitSet) null, (java.util.BitSet) null, false)
++            );
++        }
++
++        org.bukkit.craftbukkit.CraftServer cserver = this.server.server;
++        cserver.getPluginManager().callEvent(new org.leavesmc.leaves.event.PhotographerCreateEvent(player.getBukkitEntity()));
++    }
++
++    public void removePhotographer(org.leavesmc.leaves.replay.ServerPhotographer entityplayer) {
++        ServerLevel worldserver = entityplayer.serverLevel();
++
++        entityplayer.awardStat(Stats.LEAVE_GAME);
++
++        if (entityplayer.containerMenu != entityplayer.inventoryMenu) {
++            entityplayer.closeContainer(org.bukkit.event.inventory.InventoryCloseEvent.Reason.DISCONNECT);
++        }
++
++        worldserver.removePlayerImmediately(entityplayer, Entity.RemovalReason.UNLOADED_WITH_PLAYER);
++        entityplayer.retireScheduler();
++        entityplayer.getAdvancements().stopListening();
++        this.players.remove(entityplayer);
++        this.realPlayers.remove(entityplayer);
++        this.playersByName.remove(entityplayer.getScoreboardName().toLowerCase(java.util.Locale.ROOT));
++        this.server.getCustomBossEvents().onPlayerDisconnect(entityplayer);
++        UUID uuid = entityplayer.getUUID();
++        ServerPlayer entityplayer1 = this.playersByUUID.get(uuid);
++
++        if (entityplayer1 == entityplayer) {
++            this.playersByUUID.remove(uuid);
++        }
++
++        this.cserver.getScoreboardManager().removePlayer(entityplayer.getBukkitEntity());
++    }
++    // Oneiric end - 摄影师放置/移除
++
+     private void mountSavedVehicle(ServerPlayer player, ServerLevel worldserver1, Optional<CompoundTag> optional) {
+         // Paper end - Fire PlayerJoinEvent when Player is actually ready
+         if (optional.isPresent() && ((CompoundTag) optional.get()).contains("RootVehicle", 10)) {
+@@ -772,6 +911,7 @@ public abstract class PlayerList {
+         // Folia - region threading - move to onDisconnect of common packet listener
+         entityplayer.getAdvancements().stopListening();
+         this.players.remove(entityplayer);
++        this.realPlayers.remove(entityplayer); // Oneiric - 真实玩家列表
+         this.playersByName.remove(entityplayer.getScoreboardName().toLowerCase(java.util.Locale.ROOT)); // Spigot
+         this.server.getCustomBossEvents().onPlayerDisconnect(entityplayer);
+         UUID uuid = entityplayer.getUUID();
+diff --git a/src/main/java/net/minecraft/world/level/block/ComparatorBlock.java b/src/main/java/net/minecraft/world/level/block/ComparatorBlock.java
+index bc78a86260ec368ce882ac9c8f48354c06c586dd..bdf3f980e51f7159033dd5b401db30db46442f9f 100644
+--- a/src/main/java/net/minecraft/world/level/block/ComparatorBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/ComparatorBlock.java
+@@ -50,6 +50,8 @@ public class ComparatorBlock extends DiodeBlock implements EntityBlock {
+ 
+     @Override
+     public BlockState updateShape(BlockState state, Direction direction, BlockState neighborState, LevelAccessor world, BlockPos pos, BlockPos neighborPos) {
++        // Oneiric - 红石忽略向上更新：中继器/比较器不因支撑块被移除而掉落（1.20.1 行为）
++        if ((io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-ignore-upwards-update") || io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect")) && direction == Direction.DOWN) return state;
+         return direction == Direction.DOWN && !this.canSurviveOn(world, neighborPos, neighborState) ? Blocks.AIR.defaultBlockState() : super.updateShape(state, direction, neighborState, world, pos, neighborPos);
+     }
+ 
+diff --git a/src/main/java/net/minecraft/world/level/block/CoralFanBlock.java b/src/main/java/net/minecraft/world/level/block/CoralFanBlock.java
+index 7701683000132479d8c8eaa77ac3f93e41a960be..39a2ce04d9933190a407d36db366f0974a6dac55 100644
+--- a/src/main/java/net/minecraft/world/level/block/CoralFanBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/CoralFanBlock.java
+@@ -13,7 +13,7 @@ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.material.Fluid;
+ import net.minecraft.world.level.material.Fluids;
+ 
+-public class CoralFanBlock extends BaseCoralFanBlock {
++public class CoralFanBlock extends BaseCoralFanBlock implements org.leavesmc.leaves.util.FertilizableCoral { // Oneiric - 可再生的珊瑚
+ 
+     public static final MapCodec<CoralFanBlock> CODEC = RecordCodecBuilder.mapCodec((instance) -> {
+         return instance.group(CoralBlock.DEAD_CORAL_FIELD.forGetter((blockcoralfan) -> {
+@@ -63,4 +63,10 @@ public class CoralFanBlock extends BaseCoralFanBlock {
+             return super.updateShape(state, direction, neighborState, world, pos, neighborPos);
+         }
+     }
++
++    // Oneiric - 珊瑚扇：仅 expanded 模式（Carpet renewableCoral=EXPANDED）
++    @Override
++    public boolean isEnabled() {
++        return org.leavesmc.leaves.LeavesConfig.modify.oldMC.renewableCoralExpanded;
++    }
+ }
+diff --git a/src/main/java/net/minecraft/world/level/block/CoralPlantBlock.java b/src/main/java/net/minecraft/world/level/block/CoralPlantBlock.java
+index 4c4aa2a63be84ff614a3dc0db2864266755545a2..bd475aa3988fd1714d4cc09f8e72413c6620bf0c 100644
+--- a/src/main/java/net/minecraft/world/level/block/CoralPlantBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/CoralPlantBlock.java
+@@ -16,7 +16,7 @@ import net.minecraft.world.level.material.Fluids;
+ import net.minecraft.world.phys.shapes.CollisionContext;
+ import net.minecraft.world.phys.shapes.VoxelShape;
+ 
+-public class CoralPlantBlock extends BaseCoralPlantTypeBlock {
++public class CoralPlantBlock extends BaseCoralPlantTypeBlock implements org.leavesmc.leaves.util.FertilizableCoral { // Oneiric - 可再生的珊瑚
+ 
+     public static final MapCodec<CoralPlantBlock> CODEC = RecordCodecBuilder.mapCodec((instance) -> {
+         return instance.group(CoralBlock.DEAD_CORAL_FIELD.forGetter((blockcoralplant) -> {
+@@ -73,4 +73,10 @@ public class CoralPlantBlock extends BaseCoralPlantTypeBlock {
+     protected VoxelShape getShape(BlockState state, BlockGetter world, BlockPos pos, CollisionContext context) {
+         return CoralPlantBlock.SHAPE;
+     }
++
++    // Oneiric - 珊瑚株：开关 ON 即可（Carpet renewableCoral=TRUE）
++    @Override
++    public boolean isEnabled() {
++        return org.leavesmc.leaves.LeavesConfig.modify.oldMC.renewableCoral;
++    }
+ }
+diff --git a/src/main/java/net/minecraft/world/level/block/CoralWallFanBlock.java b/src/main/java/net/minecraft/world/level/block/CoralWallFanBlock.java
+index 924766117fcdf7285327e9aa1f89a630987855a8..62e44b9490095dda15212cfb881e199f752e0f5b 100644
+--- a/src/main/java/net/minecraft/world/level/block/CoralWallFanBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/CoralWallFanBlock.java
+@@ -13,7 +13,7 @@ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.material.Fluid;
+ import net.minecraft.world.level.material.Fluids;
+ 
+-public class CoralWallFanBlock extends BaseCoralWallFanBlock {
++public class CoralWallFanBlock extends BaseCoralWallFanBlock implements org.leavesmc.leaves.util.FertilizableCoral { // Oneiric - 可再生的珊瑚
+ 
+     public static final MapCodec<CoralWallFanBlock> CODEC = RecordCodecBuilder.mapCodec((instance) -> {
+         return instance.group(CoralBlock.DEAD_CORAL_FIELD.forGetter((blockcoralfanwall) -> {
+@@ -63,4 +63,10 @@ public class CoralWallFanBlock extends BaseCoralWallFanBlock {
+             return super.updateShape(state, direction, neighborState, world, pos, neighborPos);
+         }
+     }
++
++    // Oneiric - 墙扇：仅 expanded 模式（Carpet renewableCoral=EXPANDED）
++    @Override
++    public boolean isEnabled() {
++        return org.leavesmc.leaves.LeavesConfig.modify.oldMC.renewableCoralExpanded;
++    }
+ }
+diff --git a/src/main/java/net/minecraft/world/level/block/RedStoneWireBlock.java b/src/main/java/net/minecraft/world/level/block/RedStoneWireBlock.java
+index fa510d0f9f16e05c927638a11c18f96f88b64234..029532aeb9994dc34cbadc184b036285835be16b 100644
+--- a/src/main/java/net/minecraft/world/level/block/RedStoneWireBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/RedStoneWireBlock.java
+@@ -173,7 +173,7 @@ public class RedStoneWireBlock extends Block {
+     @Override
+     protected BlockState updateShape(BlockState state, Direction direction, BlockState neighborState, LevelAccessor world, BlockPos pos, BlockPos neighborPos) {
+         if (direction == Direction.DOWN) {
+-            return io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect") ? state : !this.canSurviveOn(world, neighborPos, neighborState) ? Blocks.AIR.defaultBlockState() : state; // Leaves - behavior to 1.19
++            return (io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-ignore-upwards-update") || io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect")) ? state : !this.canSurviveOn(world, neighborPos, neighborState) ? Blocks.AIR.defaultBlockState() : state; // Leaves - behavior to 1.19 // Oneiric - 归入 redstone-ignore-upwards-update（旧名 redstone-trapdoor-connect 保留兼容）
+         } else if (direction == Direction.UP) {
+             return this.getConnectionState(world, state, pos);
+         } else {
+@@ -233,7 +233,7 @@ public class RedStoneWireBlock extends Block {
+         BlockState iblockdata = world.getBlockState(blockposition1);
+ 
+         if (flag) {
+-            boolean flag1 = (!io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect") && iblockdata.getBlock() instanceof TrapDoorBlock) || this.canSurviveOn(world, blockposition1, iblockdata); // Leaves - behavior to 1.19
++            boolean flag1 = (!((io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-ignore-upwards-update") || io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect"))) && iblockdata.getBlock() instanceof TrapDoorBlock) || this.canSurviveOn(world, blockposition1, iblockdata); // Leaves - behavior to 1.19 // Oneiric - 归入 redstone-ignore-upwards-update
+ 
+             if (flag1 && RedStoneWireBlock.shouldConnectTo(world.getBlockState(blockposition1.above()))) {
+                 if (iblockdata.isFaceSturdy(world, blockposition1, direction.getOpposite())) {
+diff --git a/src/main/java/net/minecraft/world/level/block/RepeaterBlock.java b/src/main/java/net/minecraft/world/level/block/RepeaterBlock.java
+index 6bd07e8f4b445b7beaad86c9bfd7e91ba8e5e0f5..05261e4ea333625dc192877d9d0c2a081f194c15 100644
+--- a/src/main/java/net/minecraft/world/level/block/RepeaterBlock.java
++++ b/src/main/java/net/minecraft/world/level/block/RepeaterBlock.java
+@@ -64,6 +64,8 @@ public class RepeaterBlock extends DiodeBlock {
+ 
+     @Override
+     protected BlockState updateShape(BlockState state, Direction direction, BlockState neighborState, LevelAccessor world, BlockPos pos, BlockPos neighborPos) {
++        // Oneiric - 红石忽略向上更新（1.20.1 行为）
++        if ((io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-ignore-upwards-update") || io.papermc.paper.oneiric.OneiricConfig.isEnabled("redstone-trapdoor-connect")) && direction == Direction.DOWN) return state;
+         if (direction == Direction.DOWN && !this.canSurviveOn(world, neighborPos, neighborState)) {
+             return Blocks.AIR.defaultBlockState();
+         } else {
+diff --git a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralClawFeature.java b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralClawFeature.java
+index fccc556760639f3da4fa3dc9b62ee48e825916a7..32a5cdca9de9af41616a4a034110298e1011728c 100644
+--- a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralClawFeature.java
++++ b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralClawFeature.java
+@@ -17,7 +17,8 @@ public class CoralClawFeature extends CoralFeature {
+     }
+ 
+     @Override
+-    protected boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
++    // Oneiric - protected -> public（见 CoralFeature）
++    public boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
+         if (!this.placeCoralBlock(world, random, pos, state)) {
+             return false;
+         } else {
+diff --git a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralFeature.java b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralFeature.java
+index 7bc5ff8eb1174834dcc27363af4a5cef19017b3d..06b2a6e8717d5dc1381f679d5a65bb984811deb7 100644
+--- a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralFeature.java
++++ b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralFeature.java
+@@ -31,7 +31,8 @@ public abstract class CoralFeature extends Feature<NoneFeatureConfiguration> {
+         return !optional.isEmpty() && this.placeFeature(worldGenLevel, randomSource, blockPos, optional.get().defaultBlockState());
+     }
+ 
+-    protected abstract boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state);
++    // Oneiric - protected -> public（可再生的珊瑚：FertilizableCoral 需要在外部调用）
++    public abstract boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state);
+ 
+     protected boolean placeCoralBlock(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
+         BlockPos blockPos = pos.above();
+diff --git a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralMushroomFeature.java b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralMushroomFeature.java
+index e8a1e47de8265f27ce17abb3a14a5dc4647f90f9..1efcdc4cb04f2f71e3f204e50e5bc5e9802f8e84 100644
+--- a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralMushroomFeature.java
++++ b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralMushroomFeature.java
+@@ -14,7 +14,8 @@ public class CoralMushroomFeature extends CoralFeature {
+     }
+ 
+     @Override
+-    protected boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
++    // Oneiric - protected -> public（见 CoralFeature）
++    public boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
+         int i = random.nextInt(3) + 3;
+         int j = random.nextInt(3) + 3;
+         int k = random.nextInt(3) + 3;
+diff --git a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralTreeFeature.java b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralTreeFeature.java
+index ac6df01b22884bc66f42d14dfe827db2b0961213..d37e37e0f62058d2c81f53e09b035c09ec7d278f 100644
+--- a/src/main/java/net/minecraft/world/level/levelgen/feature/CoralTreeFeature.java
++++ b/src/main/java/net/minecraft/world/level/levelgen/feature/CoralTreeFeature.java
+@@ -15,7 +15,8 @@ public class CoralTreeFeature extends CoralFeature {
+     }
+ 
+     @Override
+-    protected boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
++    // Oneiric - protected -> public（见 CoralFeature）
++    public boolean placeFeature(LevelAccessor world, RandomSource random, BlockPos pos, BlockState state) {
+         BlockPos.MutableBlockPos mutableBlockPos = pos.mutable();
+         int i = random.nextInt(3) + 1;
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index c0f3a6361aec2f014891140769a0bb04ab5e636e..4a874af0e4faf4fa34684dcea9fb8aa4d98555b6 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -310,6 +310,7 @@ public final class CraftServer implements Server {
+     public static Exception excessiveVelEx; // Paper - Velocity warnings
+     private final io.papermc.paper.logging.SysoutCatcher sysoutCatcher = new io.papermc.paper.logging.SysoutCatcher(); // Paper
+     private final io.papermc.paper.potion.PaperPotionBrewer potionBrewer; // Paper - Custom Potion Mixes
++    private final org.leavesmc.leaves.entity.CraftPhotographerManager photographerManager; // Oneiric - 摄影师管理
+     public io.papermc.paper.SparksFly spark; // Paper - spark // Luminol - Force disable builtin spark
+ 
+     // Paper start - Folia region threading API
+@@ -399,7 +400,8 @@ public final class CraftServer implements Server {
+     public CraftServer(DedicatedServer console, PlayerList playerList) {
+         this.console = console;
+         this.playerList = (DedicatedPlayerList) playerList;
+-        this.playerView = Collections.unmodifiableList(Lists.transform(playerList.players, new Function<ServerPlayer, CraftPlayer>() {
++        this.photographerManager = new org.leavesmc.leaves.entity.CraftPhotographerManager(); // Oneiric - 摄影师管理
++        this.playerView = Collections.unmodifiableList(Lists.transform(playerList.realPlayers, new Function<ServerPlayer, CraftPlayer>() { // Oneiric - 只算真实玩家
+             @Override
+             public CraftPlayer apply(ServerPlayer player) {
+                 return player.getBukkitEntity();
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+index 2061268cd0dcf476b3a28e3b99555ad792503fa5..91a8690c6f402e82a39d58916ace301a669babc1 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+@@ -94,6 +94,11 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
+     public static <T extends Entity> CraftEntity getEntity(CraftServer server, T entity) {
+         Preconditions.checkArgument(entity != null, "Unknown entity");
+ 
++        // Oneiric - 摄影师（Leaves replay api）
++        if (entity instanceof org.leavesmc.leaves.replay.ServerPhotographer photographer) {
++            return new org.leavesmc.leaves.entity.CraftPhotographer(server, photographer);
++        }
++
+         // Special case human, since bukkit use Player interface for ...
+         if (entity instanceof net.minecraft.world.entity.player.Player && !(entity instanceof ServerPlayer)) {
+             return new CraftHumanEntity(server, (net.minecraft.world.entity.player.Player) entity);
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+index 728ac4b706f202205df56a207f09e0d72111a236..268d9f1a42dab7ee0bfc59620ae1c54f21d6bd85 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+@@ -2278,7 +2278,8 @@ public class CraftPlayer extends CraftHumanEntity implements Player {
+ 
+     @Override
+     public boolean canSee(Player player) {
+-        return this.canSee((org.bukkit.entity.Entity) player);
++        // Oneiric - 其他玩家"看不见"摄影师（Leaves replay api）
++        return !(player instanceof org.leavesmc.leaves.entity.Photographer) && this.canSee((org.bukkit.entity.Entity) player);
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/leavesmc/leaves/LeavesConfig.java b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+index 1e37f7da9643f7eaedf22dfa74e565bf0527c1ae..09446a36ff81574eb76cc71cbabdc24523b05ed8 100644
+--- a/src/main/java/org/leavesmc/leaves/LeavesConfig.java
++++ b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+@@ -34,6 +34,7 @@ public class LeavesConfig {
+     public static final Mics mics = new Mics();
+     public static final Protocol protocol = new Protocol();
+     public static final Modify modify = new Modify();
++    public static final ReplayMod replayMod = new ReplayMod();
+ 
+     /** 杂项。 */
+     public static final class Mics {
+@@ -99,6 +100,15 @@ public class LeavesConfig {
+             public final boolean renewableSponges = enabled("renewable-sponges");
+             /** 可再生的珊瑚。 */
+             public final boolean renewableCoral = enabled("renewable-coral");
++            /**
++             * 珊瑚再生扩展模式（对应 Carpet renewableCoral 的 TRUE/EXPANDED 两档）。
++             *
++             * <p>默认 {@code true}：只有珊瑚株可以骨粉（Carpet TRUE 语义）。
++             * 设为 {@code expanded}（{@code -Doneiric.renewable-coral-mode=expanded}）
++             * 时珊瑚扇与墙扇也可以骨粉（EXPANDED 语义，Leaves 扩展）。</p>
++             */
++            public final boolean renewableCoralExpanded = renewableCoral
++                && "expanded".equalsIgnoreCase(System.getProperty("oneiric.renewable-coral-mode", "true").trim());
+             /** 无限交易折扣。 */
+             public final boolean villagerInfiniteDiscounts = enabled("villager-infinite-discounts");
+             /** 蛛骑掉落金苹果。 */
+@@ -173,6 +183,12 @@ public class LeavesConfig {
+         public final boolean unlimitedSpeed = enabled("hopper-counter-unlimited-speed");
+     }
+ 
++    /** ReplayMod 录制（摄影师）。 */
++    public static final class ReplayMod {
++        /** 总开关：是否允许创建摄影师。 */
++        public final boolean enable = enabled("replay-mod");
++    }
++
+     /** 协议开关。字段名与 Leaves 保持一致，便于原样移植。 */
+     public static final class Protocol {
+         /** BBOR：结构边界可视化。 */
+diff --git a/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..372f7c96f7ffb37559d3b9670bf456111baba8e2
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+@@ -0,0 +1,139 @@
++package org.leavesmc.leaves.command;
++
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import org.bukkit.Bukkit;
++import org.bukkit.Location;
++import org.bukkit.command.Command;
++import org.bukkit.command.CommandSender;
++import org.bukkit.entity.Player;
++import org.jetbrains.annotations.NotNull;
++import org.leavesmc.leaves.replay.ServerPhotographer;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * Oneiric - {@code /photographer} 命令：创建/移除摄影师（回放录制）。
++ *
++ * <p>移植自 LeavesMC/Leaves（GPLv3）的 PhotographerCommand，简化为 Bukkit Command
++ * （与 /counter、/oneiric 同一注册方式）。</p>
++ *
++ * <p>创建必须在**目标位置**的 region 上调度（Folia），创建接口内部已处理；
++ * 移除同样按摄影师所在 region 调度。</p>
++ */
++public final class PhotographerCommand extends Command {
++
++    public static final String NAME = "photographer";
++
++    public PhotographerCommand() {
++        super(NAME);
++        this.setPermission("oneiric.commands.photographer");
++        this.setDescription("Create a replay photographer");
++        this.setUsage("/photographer create <id> | remove <id> | list");
++    }
++
++    public static void register() {
++        try {
++            org.bukkit.Bukkit.getCommandMap().register("oneiric", NAME, new PhotographerCommand());
++        } catch (final Throwable t) {
++            org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
++                "[Oneiric] 注册 /{} 命令失败（不影响启动）: {}", NAME, t.toString());
++        }
++    }
++
++    @Override
++    public boolean execute(@NotNull final CommandSender sender, @NotNull final String label,
++                           @NotNull final String[] args) {
++        if (!testPermission(sender)) {
++            return true;
++        }
++
++        if (args.length == 0) {
++            sender.sendMessage(Component.text(this.getUsage(), NamedTextColor.GRAY));
++            return true;
++        }
++
++        switch (args[0].toLowerCase(Locale.ROOT)) {
++            case "create" -> {
++                if (!(sender instanceof Player player)) {
++                    sender.sendMessage(Component.text("只能由玩家创建（需要在目标位置生成）", NamedTextColor.RED));
++                    return true;
++                }
++                if (args.length < 2) {
++                    sender.sendMessage(Component.text("用法: /photographer create <id>", NamedTextColor.RED));
++                    return true;
++                }
++                final String id = args[1];
++                final Location loc = player.getLocation();
++                ServerPhotographer.PhotographerCreateState state =
++                    new ServerPhotographer.PhotographerCreateState(loc, id, org.leavesmc.leaves.replay.RecorderOption.createDefaultOption());
++                try {
++                    ServerPhotographer.createPhotographer(state);
++                    sender.sendMessage(Component.text("摄影师 " + id + " 创建中（0.07+）", NamedTextColor.AQUA));
++                } catch (Exception e) {
++                    sender.sendMessage(Component.text("创建失败: " + e.getMessage(), NamedTextColor.RED));
++                }
++                return true;
++            }
++            case "remove" -> {
++                if (args.length < 2) {
++                    sender.sendMessage(Component.text("用法: /photographer remove <id>", NamedTextColor.RED));
++                    return true;
++                }
++                final ServerPhotographer photographer = ServerPhotographer.getPhotographer(args[1]);
++                if (photographer == null) {
++                    sender.sendMessage(Component.text("找不到摄影师 " + args[1], NamedTextColor.RED));
++                    return true;
++                }
++                photographer.remove(false, true);
++                sender.sendMessage(Component.text("摄影师 " + args[1] + " 已移除并保存", NamedTextColor.AQUA));
++                return true;
++            }
++            case "list" -> {
++                final List<ServerPhotographer> list = ServerPhotographer.getPhotographers();
++                sender.sendMessage(Component.text("摄影师数量: " + list.size(), NamedTextColor.AQUA));
++                for (final ServerPhotographer photographer : list) {
++                    sender.sendMessage(Component.text(
++                        "- " + photographer.createState.id + " @ " + photographer.serverLevel().getWorld().getName()
++                            + " (" + photographer.getX() + ", " + photographer.getY() + ", " + photographer.getZ() + ")",
++                        NamedTextColor.GRAY));
++                }
++                return true;
++            }
++            default -> sender.sendMessage(Component.text(this.getUsage(), NamedTextColor.RED));
++        }
++        return true;
++    }
++
++    @Override
++    public @NotNull List<String> tabComplete(@NotNull final CommandSender sender, @NotNull final String alias,
++                                             @NotNull final String[] args) {
++        if (!testPermissionSilent(sender)) {
++            return Collections.emptyList();
++        }
++        if (args.length == 1) {
++            final String prefix = args[0].toLowerCase(Locale.ROOT);
++            final List<String> out = new ArrayList<>();
++            for (final String base : new String[]{"create", "remove", "list"}) {
++                if (base.startsWith(prefix)) {
++                    out.add(base);
++                }
++            }
++            return out;
++        }
++        if (args.length == 2 && args[0].equalsIgnoreCase("remove")) {
++            final String prefix = args[1].toLowerCase(Locale.ROOT);
++            final List<String> out = new ArrayList<>();
++            for (final ServerPhotographer photographer : ServerPhotographer.getPhotographers()) {
++                if (photographer.createState.id.toLowerCase(Locale.ROOT).startsWith(prefix)) {
++                    out.add(photographer.createState.id);
++                }
++            }
++            return out;
++        }
++        return Collections.emptyList();
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/entity/CraftPhotographer.java b/src/main/java/org/leavesmc/leaves/entity/CraftPhotographer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c56df908fb2b647d6fc4afad32b1403d3d2c35c
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/entity/CraftPhotographer.java
+@@ -0,0 +1,70 @@
++package org.leavesmc.leaves.entity;
++
++import net.minecraft.server.level.ServerPlayer;
++import org.bukkit.craftbukkit.CraftServer;
++import org.bukkit.craftbukkit.entity.CraftPlayer;
++import org.bukkit.entity.Player;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++import org.leavesmc.leaves.replay.ServerPhotographer;
++
++import java.io.File;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3）。 */
++public class CraftPhotographer extends CraftPlayer implements Photographer {
++
++    public CraftPhotographer(CraftServer server, ServerPhotographer entity) {
++        super(server, entity);
++    }
++
++    @Override
++    public void stopRecording() {
++        this.stopRecording(true);
++    }
++
++    @Override
++    public void stopRecording(boolean async) {
++        this.stopRecording(async, true);
++    }
++
++    @Override
++    public void stopRecording(boolean async, boolean save) {
++        this.getHandle().remove(async, save);
++    }
++
++    @Override
++    public void pauseRecording() {
++        this.getHandle().pauseRecording();
++    }
++
++    @Override
++    public void resumeRecording() {
++        this.getHandle().resumeRecording();
++    }
++
++    @Override
++    public void setRecordFile(@NotNull File file) {
++        this.getHandle().setSaveFile(file);
++    }
++
++    @Override
++    public void setFollowPlayer(@Nullable Player player) {
++        ServerPlayer serverPlayer = player != null ? ((CraftPlayer) player).getHandle() : null;
++        this.getHandle().setFollowPlayer(serverPlayer);
++    }
++
++    @Override
++    public @NotNull String getId() {
++        return this.getHandle().createState.id;
++    }
++
++    @Override
++    public ServerPhotographer getHandle() {
++        return (ServerPhotographer) entity;
++    }
++
++    @Override
++    public String toString() {
++        return "CraftPhotographer{" + "name=" + getName() + '}';
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/entity/CraftPhotographerManager.java b/src/main/java/org/leavesmc/leaves/entity/CraftPhotographerManager.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbf61863f0f4fd559d03727a890bdc9bf9f226e2
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/entity/CraftPhotographerManager.java
+@@ -0,0 +1,66 @@
++package org.leavesmc.leaves.entity;
++
++import com.google.common.collect.Lists;
++import org.bukkit.Location;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++import org.leavesmc.leaves.replay.RecorderOption;
++import org.leavesmc.leaves.replay.ServerPhotographer;
++
++import java.util.Collection;
++import java.util.Collections;
++import java.util.UUID;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3）。 */
++public class CraftPhotographerManager implements PhotographerManager {
++
++    private final Collection<Photographer> photographerViews = Collections.unmodifiableList(
++        Lists.transform(ServerPhotographer.getPhotographers(), ServerPhotographer::getBukkitPlayer));
++
++    @Override
++    public @Nullable Photographer getPhotographer(@NotNull UUID uuid) {
++        ServerPhotographer photographer = ServerPhotographer.getPhotographer(uuid);
++        return photographer != null ? photographer.getBukkitPlayer() : null;
++    }
++
++    @Override
++    public @Nullable Photographer getPhotographer(@NotNull String id) {
++        ServerPhotographer photographer = ServerPhotographer.getPhotographer(id);
++        return photographer != null ? photographer.getBukkitPlayer() : null;
++    }
++
++    @Override
++    public @Nullable Photographer createPhotographer(@NotNull String id, @NotNull Location location) {
++        ServerPhotographer photographer = new ServerPhotographer.PhotographerCreateState(
++            location, id, RecorderOption.createDefaultOption()).createSync();
++        return photographer != null ? photographer.getBukkitPlayer() : null;
++    }
++
++    @Override
++    public void removePhotographer(@NotNull String id) {
++        ServerPhotographer photographer = ServerPhotographer.getPhotographer(id);
++        if (photographer != null) {
++            photographer.remove(true);
++        }
++    }
++
++    @Override
++    public void removePhotographer(@NotNull UUID uuid) {
++        ServerPhotographer photographer = ServerPhotographer.getPhotographer(uuid);
++        if (photographer != null) {
++            photographer.remove(true);
++        }
++    }
++
++    @Override
++    public void removeAllPhotographers() {
++        for (ServerPhotographer photographer : ServerPhotographer.getPhotographers()) {
++            photographer.remove(true);
++        }
++    }
++
++    @Override
++    public @NotNull Collection<Photographer> getPhotographers() {
++        return photographerViews;
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/entity/Photographer.java b/src/main/java/org/leavesmc/leaves/entity/Photographer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..81f56ad569cbc1198e373ed2abc3ecab9029754c
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/entity/Photographer.java
+@@ -0,0 +1,30 @@
++package org.leavesmc.leaves.entity;
++
++import org.bukkit.entity.Player;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++import java.io.File;
++
++/**
++ * Oneiric - 摄影师 API：一个自动记录周围世界数据包的隐形"玩家"。
++ * 移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。
++ */
++public interface Photographer extends Player {
++
++    void stopRecording();
++
++    void stopRecording(boolean async);
++
++    void stopRecording(boolean async, boolean save);
++
++    void pauseRecording();
++
++    void resumeRecording();
++
++    void setRecordFile(@NotNull File file);
++
++    void setFollowPlayer(@Nullable Player player);
++
++    @NotNull String getId();
++}
+diff --git a/src/main/java/org/leavesmc/leaves/entity/PhotographerManager.java b/src/main/java/org/leavesmc/leaves/entity/PhotographerManager.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f841232e89c60eb06d028cfe67537543943dbd56
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/entity/PhotographerManager.java
+@@ -0,0 +1,30 @@
++package org.leavesmc.leaves.entity;
++
++import org.bukkit.Location;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++import java.util.Collection;
++import java.util.UUID;
++
++/**
++ * Oneiric - 摄影师管理 API。移植自 LeavesMC/Leaves（GPLv3）。
++ *
++ * <p>与 Leaves 的差异：带 RecorderOption 的重载暂未提供（等 API 层一起补）。</p>
++ */
++public interface PhotographerManager {
++
++    @Nullable Photographer getPhotographer(@NotNull UUID uuid);
++
++    @Nullable Photographer getPhotographer(@NotNull String id);
++
++    @Nullable Photographer createPhotographer(@NotNull String id, @NotNull Location location);
++
++    void removePhotographer(@NotNull String id);
++
++    void removePhotographer(@NotNull UUID uuid);
++
++    void removeAllPhotographers();
++
++    @NotNull Collection<Photographer> getPhotographers();
++}
+diff --git a/src/main/java/org/leavesmc/leaves/event/PhotographerCreateEvent.java b/src/main/java/org/leavesmc/leaves/event/PhotographerCreateEvent.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..325b5705d035bac77283782bfb53702dc2179e0b
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/event/PhotographerCreateEvent.java
+@@ -0,0 +1,33 @@
++package org.leavesmc.leaves.event;
++
++import org.bukkit.entity.Player;
++import org.bukkit.event.Event;
++import org.bukkit.event.HandlerList;
++import org.jetbrains.annotations.NotNull;
++
++/**
++ * Oneiric - 摄影师放置完成事件。移植自 LeavesMC/Leaves（GPLv3）。
++ */
++public class PhotographerCreateEvent extends Event {
++
++    private static final HandlerList HANDLER_LIST = new HandlerList();
++
++    private final Player photographer;
++
++    public PhotographerCreateEvent(@NotNull Player photographer) {
++        this.photographer = photographer;
++    }
++
++    public @NotNull Player getPhotographer() {
++        return this.photographer;
++    }
++
++    @Override
++    public @NotNull HandlerList getHandlers() {
++        return HANDLER_LIST;
++    }
++
++    public static @NotNull HandlerList getHandlerList() {
++        return HANDLER_LIST;
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/DigestOutputStream.java b/src/main/java/org/leavesmc/leaves/replay/DigestOutputStream.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..03866b3bda13921c64ceff99989eafd44ea825c7
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/DigestOutputStream.java
+@@ -0,0 +1,47 @@
++package org.leavesmc.leaves.replay;
++
++import org.jetbrains.annotations.NotNull;
++
++import java.io.IOException;
++import java.io.OutputStream;
++import java.util.zip.Checksum;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。 */
++public class DigestOutputStream extends OutputStream {
++
++    private final Checksum sum;
++    private final OutputStream out;
++
++    public DigestOutputStream(OutputStream out, Checksum sum) {
++        this.out = out;
++        this.sum = sum;
++    }
++
++    @Override
++    public void close() throws IOException {
++        out.close();
++    }
++
++    @Override
++    public void flush() throws IOException {
++        out.flush();
++    }
++
++    @Override
++    public void write(int b) throws IOException {
++        sum.update(b);
++        out.write(b);
++    }
++
++    @Override
++    public void write(byte @NotNull [] b) throws IOException {
++        sum.update(b);
++        out.write(b);
++    }
++
++    @Override
++    public void write(byte @NotNull [] b, int off, int len) throws IOException {
++        sum.update(b, off, len);
++        out.write(b, off, len);
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/PhotographerStatsCounter.java b/src/main/java/org/leavesmc/leaves/replay/PhotographerStatsCounter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..36d1af8e53ef0d0c81a70c1eab5234edb9042bdc
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/PhotographerStatsCounter.java
+@@ -0,0 +1,39 @@
++package org.leavesmc.leaves.replay;
++
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.stats.ServerStatsCounter;
++import net.minecraft.stats.Stat;
++import net.minecraft.world.entity.player.Player;
++import org.jetbrains.annotations.NotNull;
++
++import java.io.File;
++
++/**
++ * Oneiric - 摄影师的空统计计数器（与假玩家的 BotStatsCounter 同模式）。
++ * 移植自 LeavesMC/Leaves（GPLv3）。
++ */
++public class PhotographerStatsCounter extends ServerStatsCounter {
++
++    private static final File DUMMY_FILE = new File("PHOTOGRAPHER_STATS_REMOVE_THIS");
++
++    public PhotographerStatsCounter(MinecraftServer server) {
++        super(server, DUMMY_FILE);
++    }
++
++    @Override
++    public void save() {
++    }
++
++    @Override
++    public void setValue(@NotNull Player player, @NotNull Stat<?> stat, int value) {
++    }
++
++    @Override
++    public void parseLocal(@NotNull com.mojang.datafixers.DataFixer dataFixer, @NotNull String json) {
++    }
++
++    @Override
++    public int getValue(@NotNull Stat<?> stat) {
++        return 0;
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/RecordMetaData.java b/src/main/java/org/leavesmc/leaves/replay/RecordMetaData.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e6af32e8db700a76cea0b575e2556e11485367a
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/RecordMetaData.java
+@@ -0,0 +1,24 @@
++package org.leavesmc.leaves.replay;
++
++import java.util.HashSet;
++import java.util.Set;
++import java.util.UUID;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。 */
++public class RecordMetaData {
++
++    public static final int CURRENT_FILE_FORMAT_VERSION = 14;
++
++    public boolean singleplayer = false;
++    public String serverName = "Leaves";
++    public int duration = 0;
++    public long date;
++    public String mcversion;
++    public String fileFormat = "MCPR";
++    public int fileFormatVersion;
++    public int protocol;
++    public String generator;
++    public int selfId = -1;
++
++    public Set<UUID> players = new HashSet<>();
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/Recorder.java b/src/main/java/org/leavesmc/leaves/replay/Recorder.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1929eb907b389bd1d084912d6d07710555e69b35
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/Recorder.java
+@@ -0,0 +1,291 @@
++package org.leavesmc.leaves.replay;
++
++import com.mojang.serialization.DynamicOps;
++import io.netty.channel.local.LocalChannel;
++import net.minecraft.SharedConstants;
++import net.minecraft.core.LayeredRegistryAccess;
++import net.minecraft.core.RegistrySynchronization;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.nbt.Tag;
++import net.minecraft.network.Connection;
++import net.minecraft.network.ConnectionProtocol;
++import net.minecraft.network.PacketSendListener;
++import net.minecraft.network.protocol.BundlePacket;
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.PacketFlow;
++import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
++import net.minecraft.network.protocol.common.ClientboundDisconnectPacket;
++import net.minecraft.network.protocol.common.ClientboundResourcePackPushPacket;
++import net.minecraft.network.protocol.common.ClientboundUpdateTagsPacket;
++import net.minecraft.network.protocol.common.custom.BrandPayload;
++import net.minecraft.network.protocol.configuration.ClientboundFinishConfigurationPacket;
++import net.minecraft.network.protocol.configuration.ClientboundRegistryDataPacket;
++import net.minecraft.network.protocol.configuration.ClientboundSelectKnownPacks;
++import net.minecraft.network.protocol.configuration.ClientboundUpdateEnabledFeaturesPacket;
++import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
++import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
++import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
++import net.minecraft.network.protocol.game.ClientboundSetTimePacket;
++import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
++import net.minecraft.network.protocol.login.ClientboundGameProfilePacket;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.RegistryLayer;
++import net.minecraft.server.packs.repository.KnownPack;
++import net.minecraft.tags.TagNetworkSerialization;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.flag.FeatureFlags;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++import org.leavesmc.leaves.LeavesLogger;
++
++import java.io.File;
++import java.io.IOException;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.TimeUnit;
++
++/**
++ * Oneiric - 摄影师的"假连接"：所有发往摄影师的数据包都被记录进 .mcpr 回放文件。
++ *
++ * <p>移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。
++ * 1.21.1 的登录成功包是 {@link ClientboundGameProfilePacket}（与 Leaves 1.21.1 一致）。</p>
++ */
++public class Recorder extends Connection {
++
++    private static final org.slf4j.Logger LOGGER = LeavesLogger.LOGGER;
++
++    private final ReplayFile replayFile;
++    private final ServerPhotographer photographer;
++    private final RecorderOption recorderOption;
++    private final RecordMetaData metaData;
++
++    private final ExecutorService saveService = Executors.newSingleThreadExecutor();
++
++    private boolean stopped = false;
++    private boolean paused = false;
++    private boolean resumeOnNextPacket = true;
++
++    private long startTime;
++    private long lastPacket;
++    private long timeShift = 0;
++
++    private boolean isSaved;
++    private boolean isSaving;
++    private ConnectionProtocol state = ConnectionProtocol.LOGIN;
++
++    public Recorder(ServerPhotographer photographer, RecorderOption recorderOption, File replayFile) throws IOException {
++        super(PacketFlow.CLIENTBOUND);
++
++        this.photographer = photographer;
++        this.recorderOption = recorderOption;
++        this.metaData = new RecordMetaData();
++        this.replayFile = new ReplayFile(replayFile);
++        this.channel = new LocalChannel();
++    }
++
++    public void start() {
++        startTime = System.currentTimeMillis();
++
++        metaData.singleplayer = false;
++        metaData.serverName = recorderOption.serverName;
++        metaData.generator = "oneiric";
++        metaData.date = startTime;
++        metaData.mcversion = SharedConstants.getCurrentVersion().getName();
++
++        savePacket(new ClientboundGameProfilePacket(photographer.getGameProfile(), true), ConnectionProtocol.LOGIN);
++        startConfiguration();
++        savePacket(new net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket(photographer.getX(), photographer.getY(), photographer.getZ(), photographer.getYRot(), photographer.getXRot(), java.util.Set.of(), 0), ConnectionProtocol.PLAY);
++
++        if (recorderOption.forceWeather != null) {
++            setWeather(recorderOption.forceWeather);
++        }
++    }
++
++    public void startConfiguration() {
++        state = ConnectionProtocol.CONFIGURATION;
++        MinecraftServer server = MinecraftServer.getServer();
++        savePacket(new ClientboundCustomPayloadPacket(new BrandPayload(server.getServerModName())), ConnectionProtocol.CONFIGURATION);
++
++        savePacket(new ClientboundUpdateEnabledFeaturesPacket(FeatureFlags.REGISTRY.toNames(server.getWorldData().enabledFeatures())), ConnectionProtocol.CONFIGURATION);
++
++        List<KnownPack> knownPackslist = server.getResourceManager().listPacks().flatMap((iresourcepack) -> iresourcepack.location().knownPackInfo().stream()).toList();
++        LayeredRegistryAccess<RegistryLayer> layeredregistryaccess = server.registries();
++
++        savePacket(new ClientboundSelectKnownPacks(knownPackslist), ConnectionProtocol.CONFIGURATION);
++        DynamicOps<Tag> dynamicOps = layeredregistryaccess.compositeAccess().createSerializationContext(NbtOps.INSTANCE);
++        RegistrySynchronization.packRegistries(
++            dynamicOps,
++            layeredregistryaccess.getAccessFrom(RegistryLayer.WORLDGEN),
++            Set.copyOf(knownPackslist),
++            (key, entries) -> savePacket(new ClientboundRegistryDataPacket(key, entries), ConnectionProtocol.CONFIGURATION)
++        );
++        savePacket(new ClientboundUpdateTagsPacket(TagNetworkSerialization.serializeTagsToNetwork(layeredregistryaccess)), ConnectionProtocol.CONFIGURATION);
++
++        server.getServerResourcePack().ifPresent((info) -> {
++            savePacket(new ClientboundResourcePackPushPacket(info.id(), info.url(), info.hash(), info.isRequired(), Optional.ofNullable(info.prompt())), ConnectionProtocol.CONFIGURATION);
++        });
++
++        savePacket(ClientboundFinishConfigurationPacket.INSTANCE, ConnectionProtocol.CONFIGURATION);
++        state = ConnectionProtocol.PLAY;
++    }
++
++    @Override
++    public void flushChannel() {
++    }
++
++    public void stop() {
++        stopped = true;
++    }
++
++    public void pauseRecording() {
++        resumeOnNextPacket = false;
++        paused = true;
++    }
++
++    public void resumeRecording() {
++        resumeOnNextPacket = true;
++    }
++
++    public void setWeather(RecorderOption.RecordWeather weather) {
++        weather.getPackets().forEach(this::savePacket);
++    }
++
++    public long getRecordedTime() {
++        final long base = System.currentTimeMillis() - startTime;
++        return base - timeShift;
++    }
++
++    private synchronized long getCurrentTimeAndUpdate() {
++        long now = getRecordedTime();
++        if (paused) {
++            if (resumeOnNextPacket) {
++                paused = false;
++            }
++            timeShift += now - lastPacket;
++            return lastPacket;
++        }
++        return lastPacket = now;
++    }
++
++    @Override
++    public boolean isConnected() {
++        return true;
++    }
++
++    @Override
++    public void send(@NotNull Packet<?> packet, @Nullable PacketSendListener callbacks, boolean flush) {
++        if (!stopped) {
++            if (packet instanceof BundlePacket<?> packet1) {
++                packet1.subPackets().forEach(subPacket -> send(subPacket, null));
++                return;
++            }
++
++            if (packet instanceof ClientboundAddEntityPacket packet1) {
++                if (packet1.getType() == EntityType.PLAYER) {
++                    metaData.players.add(packet1.getUUID());
++                    saveMetadata();
++                }
++            }
++
++            if (packet instanceof ClientboundDisconnectPacket) {
++                return;
++            }
++
++            if (recorderOption.forceDayTime != -1 && packet instanceof ClientboundSetTimePacket packet1) {
++                packet = new ClientboundSetTimePacket(packet1.getDayTime(), recorderOption.forceDayTime, false);
++            }
++
++            if (recorderOption.forceWeather != null && packet instanceof ClientboundGameEventPacket packet1) {
++                ClientboundGameEventPacket.Type type = packet1.getEvent();
++                if (type == ClientboundGameEventPacket.START_RAINING || type == ClientboundGameEventPacket.STOP_RAINING || type == ClientboundGameEventPacket.RAIN_LEVEL_CHANGE || type == ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE) {
++                    return;
++                }
++            }
++
++            if (recorderOption.ignoreChat && (packet instanceof ClientboundSystemChatPacket || packet instanceof ClientboundPlayerChatPacket)) {
++                return;
++            }
++
++            savePacket(packet);
++        }
++    }
++
++    private void saveMetadata() {
++        saveService.submit(() -> {
++            try {
++                replayFile.saveMetaData(metaData);
++            } catch (IOException e) {
++                LOGGER.error("Error saving metadata", e);
++            }
++        });
++    }
++
++    private void savePacket(Packet<?> packet) {
++        this.savePacket(packet, state);
++    }
++
++    private void savePacket(Packet<?> packet, final ConnectionProtocol protocol) {
++        try {
++            final long timestamp = getCurrentTimeAndUpdate();
++            saveService.submit(() -> {
++                try {
++                    replayFile.savePacket(timestamp, packet, protocol);
++                } catch (Exception e) {
++                    LOGGER.error("Error saving packet", e);
++                }
++            });
++        } catch (Exception e) {
++            LOGGER.error("Error saving packet", e);
++        }
++    }
++
++    public boolean isSaved() {
++        return isSaved;
++    }
++
++    public CompletableFuture<Void> saveRecording(File dest, boolean save) {
++        isSaved = true;
++        if (!isSaving) {
++            isSaving = true;
++            metaData.duration = (int) lastPacket;
++            return CompletableFuture.runAsync(() -> {
++                try {
++                    saveMetadata();
++                    saveService.shutdown();
++                    boolean interrupted = false;
++                    try {
++                        saveService.awaitTermination(10, TimeUnit.SECONDS);
++                    } catch (InterruptedException e) {
++                        interrupted = true;
++                    }
++                    try {
++                        if (save) {
++                            replayFile.closeAndSave(dest);
++                        } else {
++                            replayFile.closeNotSave();
++                        }
++                    } catch (IOException e) {
++                        e.printStackTrace();
++                        throw new CompletionException(e);
++                    } finally {
++                        if (interrupted) {
++                            Thread.currentThread().interrupt();
++                        }
++                    }
++                } finally {
++                    saveService.shutdownNow();
++                }
++            }, runnable -> {
++                final Thread thread = new Thread(runnable, "Recording file save thread");
++                thread.start();
++            });
++        }
++        LOGGER.warn("saveRecording() called twice");
++        return CompletableFuture.failedFuture(new IllegalStateException("saveRecording() called twice"));
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/RecorderOption.java b/src/main/java/org/leavesmc/leaves/replay/RecorderOption.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ec3cd9427585ddaeb55d29810db10773fc53ffa
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/RecorderOption.java
+@@ -0,0 +1,44 @@
++package org.leavesmc.leaves.replay;
++
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.List;
++
++/**
++ * Oneiric - 录制选项。移植自 LeavesMC/Leaves（GPLv3）。
++ *
++ * <p>与 Leaves 的差异：BukkitRecorderOption 是 API 侧转换入口，随 API 层一并提供，
++ * 服务端内部先只用 {@link #createDefaultOption()}。</p>
++ */
++public class RecorderOption {
++
++    public int recordDistance = -1;
++    public String serverName = "Oneiric";
++    public RecordWeather forceWeather = null;
++    public int forceDayTime = -1;
++    public boolean ignoreChat = false;
++    public boolean ignoreItem = false;
++
++    @NotNull
++    public static RecorderOption createDefaultOption() {
++        return new RecorderOption();
++    }
++
++    public enum RecordWeather {
++        CLEAR(new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0), new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, 0), new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, 0)),
++        RAIN(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0), new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, 1), new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, 0)),
++        THUNDER(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0), new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, 1), new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, 1));
++
++        private final List<Packet<?>> packets;
++
++        private RecordWeather(Packet<?>... packets) {
++            this.packets = List.of(packets);
++        }
++
++        public List<Packet<?>> getPackets() {
++            return packets;
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/ReplayFile.java b/src/main/java/org/leavesmc/leaves/replay/ReplayFile.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..589fa317d7a4f9bf75efe5509389c70b6c9bdf99
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/ReplayFile.java
+@@ -0,0 +1,195 @@
++package org.leavesmc.leaves.replay;
++
++import com.google.gson.Gson;
++import com.google.gson.GsonBuilder;
++import io.netty.buffer.ByteBuf;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.ConnectionProtocol;
++import net.minecraft.network.ProtocolInfo;
++import net.minecraft.network.RegistryFriendlyByteBuf;
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.configuration.ConfigurationProtocols;
++import net.minecraft.network.protocol.game.GameProtocols;
++import net.minecraft.network.protocol.login.LoginProtocols;
++import net.minecraft.network.protocol.status.StatusProtocols;
++import net.minecraft.server.MinecraftServer;
++import org.jetbrains.annotations.NotNull;
++import org.leavesmc.leaves.util.UUIDSerializer;
++
++import java.io.BufferedOutputStream;
++import java.io.DataOutputStream;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.io.OutputStreamWriter;
++import java.io.Writer;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.util.List;
++import java.util.Map;
++import java.util.UUID;
++import java.util.zip.CRC32;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipOutputStream;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。 */
++public class ReplayFile {
++
++    private static final String RECORDING_FILE = "recording.tmcpr";
++    private static final String RECORDING_FILE_CRC32 = "recording.tmcpr.crc32";
++    private static final String MARKER_FILE = "markers.json";
++    private static final String META_FILE = "metaData.json";
++
++    private static final Gson MARKER_GSON = new GsonBuilder().registerTypeAdapter(ReplayMarker.class, new ReplayMarker.Serializer()).create();
++    private static final Gson META_GSON = new GsonBuilder().registerTypeAdapter(UUID.class, new UUIDSerializer()).create();
++
++    private final File tmpDir;
++    private final DataOutputStream packetStream;
++    private final CRC32 crc32 = new CRC32();
++
++    private final File markerFile;
++    private final File metaFile;
++
++    private final Map<ConnectionProtocol, ProtocolInfo<?>> protocols;
++
++    public ReplayFile(@NotNull File name) throws IOException {
++        this.tmpDir = new File(name.getParentFile(), name.getName() + ".tmp");
++        if (tmpDir.exists()) {
++            if (!ReplayFile.deleteDir(tmpDir)) {
++                throw new IOException("Recording file " + name + " already exists!");
++            }
++        }
++
++        if (!tmpDir.mkdirs()) {
++            throw new IOException("Failed to create temp directory for recording " + tmpDir);
++        }
++
++        File packetFile = new File(tmpDir, RECORDING_FILE);
++        this.metaFile = new File(tmpDir, META_FILE);
++        this.markerFile = new File(tmpDir, MARKER_FILE);
++
++        this.packetStream = new DataOutputStream(new DigestOutputStream(new BufferedOutputStream(new FileOutputStream(packetFile)), crc32));
++
++        this.protocols = Map.of(
++            ConnectionProtocol.STATUS, StatusProtocols.CLIENTBOUND,
++            ConnectionProtocol.LOGIN, LoginProtocols.CLIENTBOUND,
++            ConnectionProtocol.CONFIGURATION, ConfigurationProtocols.CLIENTBOUND,
++            ConnectionProtocol.PLAY, GameProtocols.CLIENTBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(MinecraftServer.getServer().registryAccess()))
++        );
++    }
++
++    private byte @NotNull [] getPacketBytes(Packet packet, ConnectionProtocol state) {
++        ProtocolInfo<?> protocol = this.protocols.get(state);
++        if (protocol == null) {
++            throw new IllegalArgumentException("Unknown protocol state " + state);
++        }
++
++        ByteBuf buf = io.netty.buffer.Unpooled.buffer();
++        protocol.codec().encode(buf, packet);
++
++        buf.readerIndex(0);
++        byte[] ret = new byte[buf.readableBytes()];
++        buf.readBytes(ret);
++        buf.release();
++        return ret;
++    }
++
++    public void saveMarkers(java.util.List<ReplayMarker> markers) throws IOException {
++        try (Writer writer = new OutputStreamWriter(new FileOutputStream(markerFile), StandardCharsets.UTF_8)) {
++            writer.write(MARKER_GSON.toJson(markers));
++        }
++    }
++
++    public void saveMetaData(@NotNull RecordMetaData data) throws IOException {
++        data.fileFormat = "MCPR";
++        data.fileFormatVersion = RecordMetaData.CURRENT_FILE_FORMAT_VERSION;
++        data.protocol = SharedConstants.getCurrentVersion().getProtocolVersion();
++
++        try (Writer writer = new OutputStreamWriter(new FileOutputStream(metaFile), StandardCharsets.UTF_8)) {
++            writer.write(META_GSON.toJson(data));
++        }
++    }
++
++    public void savePacket(long timestamp, Packet<?> packet, ConnectionProtocol protocol) throws Exception {
++        byte[] data = getPacketBytes(packet, protocol);
++        packetStream.writeInt((int) timestamp);
++        packetStream.writeInt(data.length);
++        packetStream.write(data);
++    }
++
++    public synchronized void closeAndSave(File file) throws IOException {
++        packetStream.close();
++
++        String[] files = tmpDir.list();
++        if (files == null) {
++            return;
++        }
++
++        try (ZipOutputStream os = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(file)))) {
++            for (String fileName : files) {
++                os.putNextEntry(new ZipEntry(fileName));
++                File f = new File(tmpDir, fileName);
++                copy(new FileInputStream(f), os);
++            }
++
++            os.putNextEntry(new ZipEntry(RECORDING_FILE_CRC32));
++            Writer writer = new OutputStreamWriter(os);
++            writer.write(Long.toString(crc32.getValue()));
++            writer.flush();
++        }
++
++        for (String fileName : files) {
++            File f = new File(tmpDir, fileName);
++            Files.delete(f.toPath());
++        }
++        Files.delete(tmpDir.toPath());
++    }
++
++    public synchronized void closeNotSave() throws IOException {
++        packetStream.close();
++
++        String[] files = tmpDir.list();
++        if (files == null) {
++            return;
++        }
++
++        for (String fileName : files) {
++            File f = new File(tmpDir, fileName);
++            Files.delete(f.toPath());
++        }
++        Files.delete(tmpDir.toPath());
++    }
++
++    private void copy(@NotNull InputStream in, OutputStream out) throws IOException {
++        byte[] buffer = new byte[8192];
++        int len;
++        while ((len = in.read(buffer)) > -1) {
++            out.write(buffer, 0, len);
++        }
++        in.close();
++    }
++
++    private static boolean deleteDir(File dir) {
++        if (dir == null || !dir.exists()) {
++            return false;
++        }
++
++        File[] files = dir.listFiles();
++        if (files != null) {
++            for (File file : files) {
++                if (file.isDirectory()) {
++                    deleteDir(file);
++                } else {
++                    if (!file.delete()) {
++                        return false;
++                    }
++                }
++            }
++        }
++
++        return dir.delete();
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/ReplayMarker.java b/src/main/java/org/leavesmc/leaves/replay/ReplayMarker.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d929cf0491f1f1fefe87ce4f7f42de3a529fac5
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/ReplayMarker.java
+@@ -0,0 +1,44 @@
++package org.leavesmc.leaves.replay;
++
++import com.google.gson.JsonElement;
++import com.google.gson.JsonObject;
++import com.google.gson.JsonPrimitive;
++import com.google.gson.JsonSerializationContext;
++import com.google.gson.JsonSerializer;
++
++import java.lang.reflect.Type;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3），Powered by ReplayMod。 */
++public class ReplayMarker {
++
++    public int time;
++    public String name;
++    public double x = 0;
++    public double y = 0;
++    public double z = 0;
++    public float phi = 0;
++    public float theta = 0;
++    public float varphi = 0;
++
++    public static class Serializer implements JsonSerializer<ReplayMarker> {
++        @Override
++        public JsonElement serialize(ReplayMarker src, Type typeOfSrc, JsonSerializationContext context) {
++            JsonObject ret = new JsonObject();
++            JsonObject value = new JsonObject();
++            JsonObject position = new JsonObject();
++            ret.add("realTimestamp", new JsonPrimitive(src.time));
++            ret.add("value", value);
++
++            value.add("name", new JsonPrimitive(src.name));
++            value.add("position", position);
++
++            position.add("x", new JsonPrimitive(src.x));
++            position.add("y", new JsonPrimitive(src.y));
++            position.add("z", new JsonPrimitive(src.z));
++            position.add("yaw", new JsonPrimitive(src.phi));
++            position.add("pitch", new JsonPrimitive(src.theta));
++            position.add("roll", new JsonPrimitive(src.varphi));
++            return ret;
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/ServerPhotographer.java b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9762ab0f6255e8c0c3a508ca8ef913492081141c
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographer.java
+@@ -0,0 +1,266 @@
++package org.leavesmc.leaves.replay;
++
++import com.mojang.authlib.GameProfile;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ClientInformation;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.stats.ServerStatsCounter;
++import net.minecraft.world.damagesource.DamageSource;
++import net.minecraft.world.phys.Vec3;
++import org.bukkit.Bukkit;
++import org.bukkit.Location;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.jetbrains.annotations.NotNull;
++import org.leavesmc.leaves.LeavesLogger;
++import org.leavesmc.leaves.entity.CraftPhotographer;
++import org.leavesmc.leaves.entity.Photographer;
++
++import java.io.File;
++import java.io.IOException;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.CopyOnWriteArrayList;
++
++/**
++ * Oneiric - 摄影师：一个隐形的"假玩家"，把发往它的全部客户端包录制成 .mcpr 回放。
++ *
++ * <p>移植自 LeavesMC/Leaves 1.21.1（GPLv3），Powered by ReplayMod。</p>
++ *
++ * <p><b>Folia 适配</b>：Leaves 的 placeNewPhotographer 是同步调用；Folia 里
++ * 实体/玩家注册必须发生在目标位置的 region 线程上。这里把创建拆成两段：</p>
++ * <ul>
++ *   <li>同步段（任意线程）：校验、创建对象、Recorder 写入登录/配置包；</li>
++ *   <li>区域段（{@code Bukkit.getRegionScheduler()} 调度到出生点所在 region）：
++ *       玩家列表注册、{@code addNewPlayer}、{@code chunkMap.addEntity}。</li>
++ * </ul>
++ *
++ * <p>连接从不加入 RegionizedWorldData 的 connections 列表 —— 它不会被 tick，
++ * 也就不会触发 keepalive 超时；{@link ServerPhotographerPacketListenerImpl}
++ * 的 tick() 同时置空，双保险。</p>
++ */
++public class ServerPhotographer extends ServerPlayer {
++
++    private static final List<ServerPhotographer> photographers = new CopyOnWriteArrayList<>();
++
++    public PhotographerCreateState createState;
++    private ServerPlayer followPlayer;
++    private Recorder recorder;
++    private File saveFile;
++    private Vec3 lastPos;
++
++    private final ServerStatsCounter stats;
++
++    private ServerPhotographer(MinecraftServer server, ServerLevel world, GameProfile profile) {
++        super(server, world, profile, ClientInformation.createDefault());
++        this.gameMode = new ServerPhotographerGameMode(this);
++        this.followPlayer = null;
++        this.stats = new PhotographerStatsCounter(server);
++        this.lastPos = this.position();
++    }
++
++    public static ServerPhotographer createPhotographer(@NotNull PhotographerCreateState state) throws IOException {
++        if (!isCreateLegal(state.id)) {
++            throw new IllegalArgumentException(state.id + " is a invalid photographer id");
++        }
++
++        MinecraftServer server = MinecraftServer.getServer();
++
++        ServerLevel world = ((CraftWorld) state.loc.getWorld()).getHandle();
++        GameProfile profile = new GameProfile(UUID.randomUUID(), state.id);
++
++        ServerPhotographer photographer = new ServerPhotographer(server, world, profile);
++        photographer.recorder = new Recorder(photographer, state.option, new File("replay", state.id));
++        photographer.saveFile = new File("replay", state.id + ".mcpr");
++        photographer.createState = state;
++
++        // Oneiric - 纯包捕获（登录/配置握手），不触碰世界状态，任意线程安全
++        photographer.recorder.start();
++        photographers.add(photographer);
++
++        // Oneiric - Folia：放置必须在目标位置的 region 线程上执行
++        java.util.concurrent.CompletableFuture<Void> placed = new java.util.concurrent.CompletableFuture<>();
++        org.bukkit.Bukkit.getRegionScheduler().run(
++            org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE, state.loc, task -> {
++                try {
++                    server.getPlayerList().placeNewPhotographer(photographer.recorder, photographer, world, state.loc);
++                    photographer.serverLevel().getChunkSource().move(photographer);
++                    photographer.setInvisible(true);
++                    placed.complete(null);
++                } catch (Throwable t) {
++                    placed.completeExceptionally(t);
++                }
++            });
++        placed.exceptionally(t -> {
++            LeavesLogger.LOGGER.error("Photographer " + state.id + " placement failed", t);
++            return null;
++        });
++
++        LeavesLogger.LOGGER.info("Photographer " + state.id + " created");
++        return photographer;
++    }
++
++    @Override
++    public void tick() {
++        super.tick();
++        super.doTick();
++
++        if (this.server.getTickCount() % 10 == 0) {
++            connection.resetPosition();
++            this.serverLevel().getChunkSource().move(this);
++        }
++
++        if (this.followPlayer != null) {
++            if (this.getCamera() == this || this.getCamera().level() != this.level()) {
++                this.getBukkitPlayer().teleport(this.getCamera().getBukkitEntity().getLocation());
++                this.setCamera(followPlayer);
++            }
++            if (this.lastPos.distanceToSqr(this.position()) > 1024D) {
++                this.getBukkitPlayer().teleport(this.getCamera().getBukkitEntity().getLocation());
++            }
++        }
++
++        this.lastPos = this.position();
++    }
++
++    @Override
++    public void die(@NotNull DamageSource damageSource) {
++        super.die(damageSource);
++        remove(true);
++    }
++
++    @Override
++    public boolean isInvulnerableTo(@NotNull DamageSource damageSource) {
++        return true;
++    }
++
++    @Override
++    public boolean hurt(@NotNull DamageSource source, float amount) {
++        return false;
++    }
++
++    @Override
++    public void setHealth(float health) {
++    }
++
++    @NotNull
++    @Override
++    public ServerStatsCounter getStats() {
++        return stats;
++    }
++
++    public void remove(boolean async) {
++        this.remove(async, true);
++    }
++
++    public void remove(boolean async, boolean save) {
++        // Oneiric - Folia：实体移除必须在所属 region 线程；die() 路径天然在线程内，命令路径需调度
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this)) {
++            org.bukkit.Bukkit.getRegionScheduler().run(
++                org.leavesmc.leaves.plugin.MinecraftInternalPlugin.INSTANCE,
++                this.getBukkitEntity().getLocation(), task -> this.remove(async, save));
++            return;
++        }
++
++        super.remove(RemovalReason.KILLED);
++        photographers.remove(this);
++        this.recorder.stop();
++        this.server.getPlayerList().removePhotographer(this);
++
++        LeavesLogger.LOGGER.info("Photographer " + createState.id + " removed");
++
++        if (!recorder.isSaved()) {
++            java.util.concurrent.CompletableFuture<Void> future = recorder.saveRecording(saveFile, save);
++            if (!async) {
++                future.join();
++            }
++        }
++    }
++
++    public void setFollowPlayer(ServerPlayer followPlayer) {
++        this.setCamera(followPlayer);
++        this.followPlayer = followPlayer;
++    }
++
++    public ServerPlayer getFollowPlayer() {
++        return followPlayer;
++    }
++
++    public void setSaveFile(File saveFile) {
++        this.saveFile = saveFile;
++    }
++
++    public void pauseRecording() {
++        this.recorder.pauseRecording();
++    }
++
++    public void resumeRecording() {
++        this.recorder.resumeRecording();
++    }
++
++    public Recorder getRecorder() {
++        return this.recorder;
++    }
++
++    public static ServerPhotographer getPhotographer(String id) {
++        for (ServerPhotographer photographer : photographers) {
++            if (photographer.createState.id.equals(id)) {
++                return photographer;
++            }
++        }
++        return null;
++    }
++
++    public static ServerPhotographer getPhotographer(UUID uuid) {
++        for (ServerPhotographer photographer : photographers) {
++            if (photographer.getUUID().equals(uuid)) {
++                return photographer;
++            }
++        }
++        return null;
++    }
++
++    public static List<ServerPhotographer> getPhotographers() {
++        return photographers;
++    }
++
++    public Photographer getBukkitPlayer() {
++        return getBukkitEntity();
++    }
++
++    @Override
++    @NotNull
++    public CraftPhotographer getBukkitEntity() {
++        return (CraftPhotographer) super.getBukkitEntity();
++    }
++
++    public static boolean isCreateLegal(@NotNull String name) {
++        if (!name.matches("^[a-zA-Z0-9_]{4,16}$")) {
++            return false;
++        }
++
++        return Bukkit.getPlayerExact(name) == null && ServerPhotographer.getPhotographer(name) == null;
++    }
++
++    public static class PhotographerCreateState {
++
++        public RecorderOption option;
++        public Location loc;
++        public final String id;
++
++        public PhotographerCreateState(Location loc, String id, RecorderOption option) {
++            this.loc = loc;
++            this.id = id;
++            this.option = option;
++        }
++
++        public ServerPhotographer createSync() {
++            try {
++                return createPhotographer(this);
++            } catch (IOException e) {
++                LeavesLogger.LOGGER.error(e.toString());
++            }
++            return null;
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerGameMode.java b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerGameMode.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5109750cc2e039e5a93de0ba12a4d2023ad281b
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerGameMode.java
+@@ -0,0 +1,36 @@
++package org.leavesmc.leaves.replay;
++
++import net.kyori.adventure.text.Component;
++import net.minecraft.server.level.ServerPlayerGameMode;
++import net.minecraft.world.level.GameType;
++import org.bukkit.event.player.PlayerGameModeChangeEvent;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++/** Oneiric - 摄影师固定旁观模式。移植自 LeavesMC/Leaves（GPLv3）。 */
++public class ServerPhotographerGameMode extends ServerPlayerGameMode {
++
++    public ServerPhotographerGameMode(ServerPhotographer photographer) {
++        super(photographer);
++        super.setGameModeForPlayer(GameType.SPECTATOR, null);
++    }
++
++    @Override
++    public boolean changeGameModeForPlayer(@NotNull GameType gameMode) {
++        return false;
++    }
++
++    @Nullable
++    @Override
++    public PlayerGameModeChangeEvent changeGameModeForPlayer(@NotNull GameType gameMode, PlayerGameModeChangeEvent.@NotNull Cause cause, @Nullable Component cancelMessage) {
++        return null;
++    }
++
++    @Override
++    protected void setGameModeForPlayer(@NotNull GameType gameMode, @Nullable GameType previousGameMode) {
++    }
++
++    @Override
++    public void tick() {
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerPacketListenerImpl.java b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerPacketListenerImpl.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b8b1c847497f82ab2dcb6e4222f219986fda1007
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/replay/ServerPhotographerPacketListenerImpl.java
+@@ -0,0 +1,39 @@
++package org.leavesmc.leaves.replay;
++
++import net.minecraft.network.Connection;
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.PacketFlow;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.network.CommonListenerCookie;
++import net.minecraft.server.network.ServerGamePacketListenerImpl;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++/**
++ * Oneiric - 摄影师的包监听器。
++ *
++ * <p>send() 不重写：数据包经 Connection.send 进入 {@link Recorder} 被记录。
++ * tick() 置空：假连接没有 keepalive 应答，跑原版 tick 会被"超时"踢掉。</p>
++ *
++ * <p>移植模式来自 LeavesMC/Leaves 的 ServerBotPacketListenerImpl（GPLv3）。</p>
++ */
++public class ServerPhotographerPacketListenerImpl extends ServerGamePacketListenerImpl {
++
++    public ServerPhotographerPacketListenerImpl(MinecraftServer server, Connection connection, ServerPhotographer player) {
++        super(server, connection, player, CommonListenerCookie.createInitial(player.gameProfile, false));
++    }
++
++    // Oneiric - 1.21.1 的父类没有 send(Packet, ChannelFutureListener)/disconnect(DisconnectionDetails)/
++    // isAcceptingMessages/hasClientLoaded 的可覆盖签名（它们是 Leaves 26.x 加的），只保留 tick 置空：
++    // 不跑 keepalive，假连接就不会被"超时"踢掉。数据包走 Connection.send 进入 Recorder 被记录。
++
++    @Override
++    public void tick() {
++        // no-op：不处理移动、不跑 keepalive。数据包捕获在 Recorder（Connection 层）。
++    }
++
++    @Override
++    public void disconnect(@NotNull net.minecraft.network.DisconnectionDetails disconnectionInfo, org.bukkit.event.player.PlayerKickEvent.Cause cause) {
++        // no-op：摄影师的移除走 removePhotographer，不走断线流程
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/util/FertilizableCoral.java b/src/main/java/org/leavesmc/leaves/util/FertilizableCoral.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e91dcc310503952c0f64414bbeac4d2c4b2de7c
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/util/FertilizableCoral.java
+@@ -0,0 +1,89 @@
++package org.leavesmc.leaves.util;
++
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.Holder;
++import net.minecraft.core.HolderSet;
++import net.minecraft.core.particles.ParticleTypes;
++import net.minecraft.core.registries.Registries;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.tags.BlockTags;
++import net.minecraft.tags.FluidTags;
++import net.minecraft.util.RandomSource;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.LevelReader;
++import net.minecraft.world.level.block.BaseCoralPlantTypeBlock;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.Blocks;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.level.levelgen.feature.CoralClawFeature;
++import net.minecraft.world.level.levelgen.feature.CoralFeature;
++import net.minecraft.world.level.levelgen.feature.CoralMushroomFeature;
++import net.minecraft.world.level.levelgen.feature.CoralTreeFeature;
++import net.minecraft.world.level.levelgen.feature.configurations.NoneFeatureConfiguration;
++import net.minecraft.world.level.material.MapColor;
++import org.jetbrains.annotations.NotNull;
++
++/**
++ * Oneiric - 可再生的珊瑚：对珊瑚使用骨粉可生成珊瑚结构。
++ *
++ * <p>移植自 LeavesMC/Leaves（GPLv3），原始实现来自 fabric-carpet 的
++ * {@code FertilizableCoral}。</p>
++ *
++ * <p><b>与 Leaves 的差异</b>：26.x 的
++ * {@code registryAccess().lookupOrThrow(...).getOrThrow(tag)} 在 1.21.1 上是
++ * {@code registryOrThrow(...).getOrThrow(tag)}（Registry 自己就有
++ * {@code getOrThrow(TagKey)}）。其余逻辑（按颜色挑珊瑚块、失败回滚、
++ * 小概率在海绵位生成湿海绵）逐行一致。</p>
++ *
++ * <p> vanilla 珊瑚方块类没有实现 {@code BonemealableBlock}，所以"不能对珊瑚用骨粉"
++ * 是因为它压根不在骨粉的处理列表里——实现本接口即可让骨粉生效，纯增量、无覆盖冲突。</p>
++ */
++public interface FertilizableCoral extends net.minecraft.world.level.block.BonemealableBlock {
++
++    boolean isEnabled();
++
++    @Override
++    default boolean isValidBonemealTarget(@NotNull LevelReader world, @NotNull BlockPos pos, @NotNull BlockState state) {
++        return isEnabled() && state.getValue(BaseCoralPlantTypeBlock.WATERLOGGED) && world.getFluidState(pos.above()).is(FluidTags.WATER);
++    }
++
++    @Override
++    default boolean isBonemealSuccess(@NotNull Level world, RandomSource random, @NotNull BlockPos pos, @NotNull BlockState state) {
++        ((ServerLevel) world).sendParticles(ParticleTypes.HAPPY_VILLAGER, pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5, 8, 0.3, 0.5, 0.3, 0.0);
++        return random.nextFloat() < 0.15D;
++    }
++
++    @Override
++    default void performBonemeal(@NotNull ServerLevel worldIn, RandomSource random, @NotNull BlockPos pos, @NotNull BlockState blockUnder) {
++        int variant = random.nextInt(3);
++        CoralFeature coral = switch (variant) {
++            case 0 -> new CoralClawFeature(NoneFeatureConfiguration.CODEC);
++            case 1 -> new CoralTreeFeature(NoneFeatureConfiguration.CODEC);
++            default -> new CoralMushroomFeature(NoneFeatureConfiguration.CODEC);
++        };
++
++        MapColor color = blockUnder.getMapColor(worldIn, pos);
++        BlockState properBlock = blockUnder;
++        // Oneiric - 1.21.1 的 Registry#getOrThrow 只收 ResourceKey；tag 版要用 getTag().orElseThrow。
++        HolderSet.Named<Block> coralBlocks = worldIn.registryAccess().registryOrThrow(Registries.BLOCK)
++            .getTag(BlockTags.CORAL_BLOCKS).orElseThrow(() -> new IllegalStateException("Missing tag " + BlockTags.CORAL_BLOCKS));
++        for (Holder<Block> block : coralBlocks) {
++            properBlock = block.value().defaultBlockState();
++            if (properBlock.getMapColor(worldIn, pos) == color) {
++                break;
++            }
++        }
++        worldIn.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_NONE);
++
++        if (!coral.placeFeature(worldIn, random, pos, properBlock)) {
++            worldIn.setBlock(pos, blockUnder, 3);
++        } else {
++            if (worldIn.random.nextInt(10) == 0) {
++                BlockPos randomPos = pos.offset(worldIn.random.nextInt(16) - 8, worldIn.random.nextInt(8), worldIn.random.nextInt(16) - 8);
++                if (coralBlocks.contains(worldIn.getBlockState(randomPos).getBlockHolder())) {
++                    worldIn.setBlock(randomPos, Blocks.WET_SPONGE.defaultBlockState(), Block.UPDATE_ALL);
++                }
++            }
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/util/UUIDSerializer.java b/src/main/java/org/leavesmc/leaves/util/UUIDSerializer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc003117dfa643ff8be11646d98d56d88f1e20c9
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/util/UUIDSerializer.java
+@@ -0,0 +1,18 @@
++package org.leavesmc.leaves.util;
++
++import com.google.gson.JsonElement;
++import com.google.gson.JsonPrimitive;
++import com.google.gson.JsonSerializationContext;
++import com.google.gson.JsonSerializer;
++import org.jetbrains.annotations.NotNull;
++
++import java.lang.reflect.Type;
++import java.util.UUID;
++
++/** Oneiric - 移植自 LeavesMC/Leaves（GPLv3）。 */
++public class UUIDSerializer implements JsonSerializer<UUID> {
++    @Override
++    public JsonElement serialize(@NotNull UUID src, Type typeOfSrc, @NotNull com.google.gson.JsonSerializationContext context) {
++        return new JsonPrimitive(src.toString());
++    }
++}

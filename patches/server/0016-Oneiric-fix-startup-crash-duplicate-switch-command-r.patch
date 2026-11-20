@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 07:07:48 +0800
+Subject: [PATCH] Oneiric: fix startup-crash duplicate switch + command
+ registration arg order
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index 62d77ba5dc2e591da043f5811c11aaf1af424705..8b4ff41fc7b7fa6e8622d66119f3f8eadea5ced1 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -70,8 +70,9 @@ public final class OneiricConfig {
+             "protocol-servux-litematics",
+             "protocol-syncmatica",
+             "protocol-bladeren",
+-            "replay-mod",
+             // ReplayMod 摄影师：/photographer 命令创建录制者，写 .mcpr 回放文件。
++            // 注意：这里只能出现一次 —— DEFAULT_ON 是 Set.of(...)，重复元素会在
++            // 类初始化时抛 IllegalArgumentException，服务器启动即崩。
+             "replay-mod",
+             // 生电原版对齐（从旧 Oneiric 树移植，Leaves 系）：这两项默认开，因为它们是把
+             // Paper 的优化**退回原版语义**，而本项目的红线是「行为同原版」。
+@@ -303,6 +304,43 @@ public final class OneiricConfig {
+         return !FORCED_OFF.contains(name) && DEFAULT_ON.contains(name);
+     }
+ 
++    /**
++     * Oneiric - 开关表自检。<b>在类初始化时运行，崩得早好过崩得晚</b>。
++     *
++     * <h2>为什么必须存在</h2>
++     *
++     * <p>{@link #DEFAULT_ON} 是 {@code Set.of(...)}，而 {@code Set.of} 遇到重复元素直接抛
++     * {@link IllegalArgumentException}。这类重复是本项目反复出现的缺陷：</p>
++     * <ul>
++     *   <li>{@code mc-technical-mode} 重复 —— 启动即崩；</li>
++     *   <li>{@code crafter1gt} / {@code renewable-deepslate} 重复；</li>
++     *   <li>{@code replay-mod} 重复 —— 又一次启动即崩（移植摄影师时引入）。</li>
++     * </ul>
++     *
++     * <p>{@code Set.of} 自己的报错只有 {@code duplicate element: xxx}，没有文件名也没有
++     * "哪个数组"，排查要翻整个类。这里提前查、并且说清楚是哪张表、哪个名字、出现几次。</p>
++     */
++    static {
++        checkNoDuplicates("DEFAULT_ON", DEFAULT_ON.toArray(new String[0]));
++        checkNoDuplicates("FORCED_OFF", FORCED_OFF.toArray(new String[0]));
++        checkNoDuplicates("NAMES", NAMES);
++        checkNoDuplicates("FORCED_OFF_ORDER", FORCED_OFF_ORDER);
++        checkNoDuplicates("TECHNICAL_SWITCHES", TECHNICAL_SWITCHES);
++    }
++
++    private static void checkNoDuplicates(final String table, final String[] names) {
++        final java.util.Map<String, Integer> seen = new java.util.HashMap<>(names.length * 2);
++        for (final String name : names) {
++            final Integer previous = seen.put(name, seen.getOrDefault(name, 0) + 1);
++            if (previous != null) {
++                throw new IllegalStateException(
++                        "[Oneiric] " + table + " 里开关名重复: \"" + name + "\"（出现 " + (previous + 2)
++                                + " 次）。Set.of(...) 遇重复会抛异常使服务器无法启动，"
++                                + "请删除多余的那一行。");
++            }
++        }
++    }
++
+     /**
+      * 读一个整数值的 Oneiric 属性（供线程数等数值型开关使用）。
+      *
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotCommand.java b/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
+index 8bfe63288d55410815bb47782d2027aaa712c1a4..188889f534e56a675e1a092a3589537ddf4f3cee 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotCommand.java
+@@ -54,7 +54,8 @@ public class BotCommand extends Command {
+     /** Oneiric - 与 /counter、/photographer 相同的注册方式；失败只记日志、不阻断启动。 */
+     public static void register() {
+         try {
+-            org.bukkit.Bukkit.getCommandMap().register("oneiric", "bot", new BotCommand("bot"));
++            // 注意参数顺序：第一个是回退前缀，第二个才是命令名（见 CounterCommand#register 的说明）
++            org.bukkit.Bukkit.getCommandMap().register("bot", "oneiric", new BotCommand("bot"));
+         } catch (final Throwable t) {
+             org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
+                 "[Oneiric] 注册 /bot 命令失败（不影响启动）: {}", t.toString());
+diff --git a/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java b/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
+index c9a20829974b444c0312304da5a340795c287c7e..4a420aed5a2746cf4cc05d3cc58ccf30c97cc865 100644
+--- a/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
++++ b/src/main/java/org/leavesmc/leaves/bot/BotCreateState.java
+@@ -98,29 +98,46 @@ public record BotCreateState(String realName, String name, String skinName, Stri
+             return new BotCreateState(realName, name, skinName, skin, location, createReason, creator);
+         }
+ 
++        /**
++         * Oneiric - 带皮肤的创建（异步）。
++         *
++         * <h2>与 Leaves 的差异</h2>
++         *
++         * <p>Leaves 的顺序是「先拉皮肤，再创建」：{@code mojangAPISkin()} 是同步 HTTP，
++         * 在异步线程上跑完才投递创建任务。</p>
++         *
++         * <p>这在"服务器能连 Mojang"时没问题，但在<b>连不上</b>时（国内网络、离线服、
++         * Mojang 限流）每个 bot 要等满两次超时 —— 实测 12 秒才 join，
++         * 玩家看到的就是"我敲了 /bot create 但没反应"。</p>
++         *
++         * <p>改成：<b>先创建</b>（立刻上线），皮肤拉到了再补发。
++         * 皮肤只是外观，晚几秒到位完全可以接受；而"创建慢到像没反应"不可接受。</p>
++         */
+         public void spawnWithSkin(Consumer<Bot> consumer) {
+-            // 拉皮肤是网络 I/O，必须在异步线程做（否则会卡住调用它的区域线程）
++            final Location at = this.location;
++            if (at == null) {
++                return;
++            }
++
++            // 1) 先投递创建：立刻上线，不等网络
++            try {
++                Bukkit.getRegionScheduler().execute(MinecraftInternalPlugin.INSTANCE, at, () -> {
++                    final CraftBot bot = this.spawn();
++                    if (bot != null && consumer != null) {
++                        consumer.accept(bot);
++                    }
++                });
++            } catch (final RuntimeException rejected) {
++                org.leavesmc.leaves.LeavesLogger.LOGGER.warn("Failed to schedule bot spawn at " + at, rejected);
++                return;
++            }
++
++            // 2) 皮肤异步补：拿不到就保持默认皮肤，不影响 bot 已上线的事实
+             Bukkit.getScheduler().runTaskAsynchronously(MinecraftInternalPlugin.INSTANCE, () -> {
+-                this.mojangAPISkin();
+-                // Oneiric - 与 Leaves 的差异：Leaves 这里用 Bukkit.getScheduler().runTask()，
+-                // 那是全局线程；然后 createNewBot 发现自己不在目标区域、投递后返回 null，
+-                // 于是 consumer 永远不会被调用。
+-                //
+-                // 这里直接投递到目标位置所属的区域线程：spawn() 会在正确的线程上完成，
+-                // 返回值就是真正的 bot，consumer 才真的能收到回调。
+-                final Location at = this.location;
+-                if (at == null) {
+-                    return;
+-                }
+                 try {
+-                    Bukkit.getRegionScheduler().execute(MinecraftInternalPlugin.INSTANCE, at, () -> {
+-                        final CraftBot bot = this.spawn();
+-                        if (bot != null && consumer != null) {
+-                            consumer.accept(bot);
+-                        }
+-                    });
+-                } catch (final RuntimeException rejected) {
+-                    org.leavesmc.leaves.LeavesLogger.LOGGER.warn("Failed to schedule bot spawn at " + at, rejected);
++                    this.mojangAPISkin();
++                } catch (final Throwable ignored) {
++                    // 皮肤是可选装饰，任何失败都不该影响 bot 本身
+                 }
+             });
+         }
+diff --git a/src/main/java/org/leavesmc/leaves/command/CounterCommand.java b/src/main/java/org/leavesmc/leaves/command/CounterCommand.java
+index b700cb218f3d794dbceedd5ebc81ee1c84ec721d..3ac5523e15e5a685f9cd23cb08e2832d6e3e2c63 100644
+--- a/src/main/java/org/leavesmc/leaves/command/CounterCommand.java
++++ b/src/main/java/org/leavesmc/leaves/command/CounterCommand.java
+@@ -35,10 +35,21 @@ public final class CounterCommand extends Command {
+         this.setUsage("/counter [enable|disable|reset|<color> [reset|realtime]]");
+     }
+ 
+-    /** 与 {@code /oneiric} 相同的注册方式，失败只记日志、不阻断启动。 */
++    /**
++     * 注册到 Bukkit 命令表。
++     *
++     * <p><b>参数顺序</b>：{@code SimpleCommandMap#register(String fallbackPrefix, String label, Command)}
++     * —— 第一个参数是<b>回退前缀</b>（用于避免与其它插件的同名命令冲突），第二个才是命令名。
++     * 早先这里写成 {@code register("oneiric", NAME, ...)} 顺序看起来对，但对照
++     * {@code /oneiric} 的注册（{@code register("oneiric", "oneiric", ...)}）才暴露问题：
++     * 命令名必须以 {@code NAME} 作为第二个参数，否则会注册成 {@code counter:oneiric}
++     * 这种带前缀的怪名字，{@code /counter} 根本派发不到。</p>
++     */
+     public static void register() {
+         try {
+-            org.bukkit.Bukkit.getCommandMap().register("oneiric", NAME, new CounterCommand());
++            // 签名是 register(label, fallbackPrefix, command)：label 必须在前。
++            // 写成 ("oneiric", NAME, ...) 会注册出 counter:oneiric 这种名字，/counter 派发不到。
++            org.bukkit.Bukkit.getCommandMap().register(NAME, "oneiric", new CounterCommand());
+         } catch (final Throwable t) {
+             org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
+                 "[Oneiric] 注册 /{} 命令失败（不影响启动）: {}", NAME, t.toString());
+diff --git a/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+index 372f7c96f7ffb37559d3b9670bf456111baba8e2..22a47fca14fef35b91bee66d8686a1b29c9be510 100644
+--- a/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
++++ b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+@@ -37,7 +37,8 @@ public final class PhotographerCommand extends Command {
+ 
+     public static void register() {
+         try {
+-            org.bukkit.Bukkit.getCommandMap().register("oneiric", NAME, new PhotographerCommand());
++            // 注意参数顺序：第一个是回退前缀，第二个才是命令名（见 CounterCommand#register 的说明）
++            org.bukkit.Bukkit.getCommandMap().register(NAME, "oneiric", new PhotographerCommand());
+         } catch (final Throwable t) {
+             org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
+                 "[Oneiric] 注册 /{} 命令失败（不影响启动）: {}", NAME, t.toString());

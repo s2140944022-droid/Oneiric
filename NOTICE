@@ -1,0 +1,24 @@
+Oneiric
+Copyright (C) 2026 Fuchen and contributors
+
+This project is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This project is a derivative work of the following upstream projects. Their
+copyright notices and license terms continue to apply:
+
+  - PaperMC/Paper            https://github.com/PaperMC/Paper            GPLv3
+  - PaperMC/Folia            https://github.com/PaperMC/Folia            GPLv3
+  - LuminolMC/Luminol        https://github.com/LuminolMC/Luminol        GPLv3; fork additions MIT
+  - SpigotMC / Bukkit / CraftBukkit contributors                          GPLv3
+  - LeavesMC/Leaves          https://github.com/LeavesMC/Leaves          GPLv3; portions MIT
+  - chyppt/LeavesX           https://github.com/chyppt/LeavesX           GPLv3; portions MIT
+    (reference for selected optimization concepts and patches)
+
+The original Luminol MIT license text is preserved at
+licenses/Luminol-MIT.txt for attribution purposes.
+
+Minecraft is a trademark of Mojang Synergies AB. This project is not
+affiliated with, endorsed by, or sponsored by Mojang Studios or Microsoft.

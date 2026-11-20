@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 00:48:47 +0800
+Subject: [PATCH] Oneiric: fix yml key mismatch and document unimplemented
+ switches
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index 2d4e22b1cb5956b1dddae335b41fdb7420a7cf6a..fe7945b2e08d9e5cac4d702506fe019c0d4864dc 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -381,7 +381,7 @@ public final class OneiricYml {
+                 "紫水晶母岩可被活塞推动（原版不能推）。",
+                 "对应 Carpet 的 movableBuddingAmethyst，用于移动紫水晶农场。",
+                 "不做紫水晶农场时不建议打开。");
+-        block(sb, "snowball-and-egg-can-knockback", false, "雪球/鸡蛋击退玩家",
++        block(sb, "snowball-and-egg-knockback", false, "雪球/鸡蛋击退玩家",
+                 "雪球与鸡蛋命中玩家时造成击退（原版对玩家无击退）。",
+                 "对应 Carpet 的 snowballAndEggCanKnockback，用于无伤击退装置。",
+                 "普通生存服保持关闭。");
+@@ -493,6 +493,20 @@ public final class OneiricYml {
+                 "随机数三角分布改为扁平分布。",
+                 "对应 Carpet 的 flattenTriangularDistribution，改变随机物品/生物的概率分布。",
+                 "只在装置按该分布设计时打开。");
++        // 以下三条尚未接入实现。写进 yml 是为了让运维看到它们「存在但未生效」，
++        // 而不是在别处看到名字、在本文件里找不到而误以为漏写。
++        block(sb, "renewable-coral", false, "可再生珊瑚（未实现）",
++                "上游的珊瑚再生机制还没有移植到本核心，本开关当前不产生任何效果。",
++                "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
++                "现在改它没有作用；等实现落地后本行说明会更新。");
++        block(sb, "redstone-ignore-upwards-update", false, "红石忽略向上更新（未实现）",
++                "上游的红石向上更新抑制尚未移植，本开关当前不产生任何效果。",
++                "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
++                "现在改它没有作用。");
++        block(sb, "old-block-remove-behaviour", false, "旧版方块移除（未实现）",
++                "旧版方块移除行为涉及 30 余个方块类，尚未移植，本开关当前不产生任何效果。",
++                "写在这里是为了让配置文件与开关表保持一致，便于日后补齐。",
++                "现在改它没有作用。");
+         block(sb, "mc-technical-mode", true, "技术模式",
+                 "打开一组生电向的细节调整（例如漏斗不进入冷却）。",
+                 "原版生电玩家常用的行为集合，集中在一个开关里便于整体切换。",

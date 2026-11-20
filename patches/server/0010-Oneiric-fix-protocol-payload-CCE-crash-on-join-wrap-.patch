@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 02:48:20 +0800
+Subject: [PATCH] Oneiric: fix protocol payload CCE crash on join (wrap
+ LeavesCustomPayload as DiscardedPayload; wire typed @PayloadReceiver inbound
+ dispatch)
+
+
+diff --git a/src/main/java/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/src/main/java/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index f7ff5a5fa93813a8f4741ddad844bd48e1330fd2..c108baa9700788ff14400e1a5e2a7b4e06475e39 100644
+--- a/src/main/java/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/src/main/java/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -219,6 +219,12 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+                             selector, identifier, payload.duplicate())) {
+                         return;
+                     }
++                    // Oneiric - @PayloadReceiver 类型化协议的入站分发（Syncmatica 等）：
++                    // ID2CODEC 里注册过的通道 → 解码成带类型 payload → 按 payload class 路由。
++                    if (org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleTypedPayload(
++                            selector, identifier, payload.duplicate())) {
++                        return;
++                    }
+                 }
+                 // Oneiric end
+                 byte[] data = new byte[payload.readableBytes()];
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/core/LeavesProtocolManager.java b/src/main/java/org/leavesmc/leaves/protocol/core/LeavesProtocolManager.java
+index 08e29ca34c7d4a9028f653a1bf1301d245652f63..720e298681d713d283e6de3c68ef5b549aa2f2d3 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/core/LeavesProtocolManager.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/core/LeavesProtocolManager.java
+@@ -6,6 +6,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
+ import net.minecraft.network.codec.StreamCodec;
+ import net.minecraft.resources.ResourceLocation;
+ import net.minecraft.server.level.ServerPlayer;
++import org.jetbrains.annotations.Nullable;
+ import org.leavesmc.leaves.LeavesLogger;
+ import org.leavesmc.leaves.protocol.core.invoker.BytebufReceiverInvokerHolder;
+ import org.leavesmc.leaves.protocol.core.invoker.EmptyInvokerHolder;
+@@ -205,6 +206,49 @@ public class LeavesProtocolManager {
+         }
+     }
+ 
++    // Oneiric start - 出站编码支持（1.21.1）
++    //
++    // 1.21.1 vanilla 的 custom_payload 编码器不可注册，LeavesCustomPayload 必须在
++    // 发送前转成 DiscardedPayload 透传（见 ProtocolUtils#wrapLeavesPayload）。
++    // 这里暴露 @ID 表与 @Codec 的 body 编码，供对称使用。
++    @Nullable
++    public static ResourceLocation payloadId(LeavesCustomPayload payload) {
++        return IDS.get(payload.getClass());
++    }
++
++    /** 只编码 @Codec 的 body，不含通道 id（id 由 DiscardedPayload 外层写入）。 */
++    public static void encodeBody(FriendlyByteBuf buf, LeavesCustomPayload payload) {
++        var codec = CODECS.get(payload.getClass());
++        if (codec == null) {
++            throw new IllegalArgumentException("Payload " + payload.getClass() + " has no @Codec");
++        }
++        codec.encode(ProtocolUtils.decorate(buf), payload);
++    }
++
++    /**
++     * {@code @PayloadReceiver} 类型化协议的入站分发（Syncmatica 等）。
++     * ID2CODEC 里注册过的通道 → 解码成带类型 payload → 按 payload class 路由。
++     * 未注册返回 false，调用方继续走 Bukkit messenger。
++     */
++    public static boolean handleTypedPayload(IdentifierSelector selector, ResourceLocation location, ByteBuf buf) {
++        var codec = ID2CODEC.get(location);
++        if (codec == null) {
++            return false;
++        }
++        try {
++            LeavesCustomPayload payload = codec.decode(ProtocolUtils.decorate(buf));
++            if (payload == null) {
++                return false;
++            }
++            handlePayload(selector, payload);
++            return true;
++        } catch (Exception e) {
++            LOGGER.error("Failed to decode payload {}", location, e);
++            return false;
++        }
++    }
++    // Oneiric end - 出站编码支持
++
+     public static boolean handleBytebuf(IdentifierSelector selector, ResourceLocation location, ByteBuf buf) {
+         RegistryFriendlyByteBuf buf1 = ProtocolUtils.decorate(buf);
+         BytebufReceiverInvokerHolder holder;
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/core/ProtocolUtils.java b/src/main/java/org/leavesmc/leaves/protocol/core/ProtocolUtils.java
+index c8ed4dee1508a08e4292148448609aed392fa649..2941195b06d8f410f023e8cd8f552893f726855b 100644
+--- a/src/main/java/org/leavesmc/leaves/protocol/core/ProtocolUtils.java
++++ b/src/main/java/org/leavesmc/leaves/protocol/core/ProtocolUtils.java
+@@ -6,6 +6,7 @@ import io.netty.buffer.ByteBuf;
+ import io.netty.buffer.ByteBufUtil;
+ import io.netty.buffer.Unpooled;
+ import io.papermc.paper.ServerBuildInfo;
++import net.minecraft.network.FriendlyByteBuf;
+ import net.minecraft.network.RegistryFriendlyByteBuf;
+ import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
+ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+@@ -47,7 +48,7 @@ public class ProtocolUtils {
+     }
+ 
+     public static void sendPayloadPacket(ServerPlayer player, CustomPacketPayload payload) {
+-        player.connection.send(new ClientboundCustomPayloadPacket(payload));
++        player.connection.send(new ClientboundCustomPayloadPacket(wrapLeavesPayload(payload)));
+     }
+ 
+     public static void sendEmptyPacket(Context context, ResourceLocation id) {
+@@ -61,9 +62,33 @@ public class ProtocolUtils {
+     }
+ 
+     public static void sendPayloadPacket(Context context, CustomPacketPayload payload) {
+-        context.connection().send(new ClientboundCustomPayloadPacket(payload));
++        context.connection().send(new ClientboundCustomPayloadPacket(wrapLeavesPayload(payload)));
+     }
+ 
++    // Oneiric start - LeavesCustomPayload 出站适配（1.21.1）
++    //
++    // 1.21.1 vanilla 的 custom_payload 编码器只认「注册过的类型」+ DiscardedPayload 透传；
++    // 直接发 LeavesCustomPayload 实现类会被强转成 DiscardedPayload 而 CCE，
++    // 连接当场断开（实测玩家一进 PLAY 阶段就被 Syncmatica 握手包炸下线）。
++    //
++    // 上游 26.x 通过 Bytebuf API 把 @Codec 注册进 vanilla 编码器；1.21.1 的
++    // 编码器是静态构建、不可注册的，所以这里走框架编解码表对称转换：
++    // 线格式 = @ID 声明的真实通道 id + @Codec 编出的 body，
++    // 用 DiscardedPayload 透传，与客户端 mod 的期望完全一致。
++    private static CustomPacketPayload wrapLeavesPayload(CustomPacketPayload payload) {
++        if (!(payload instanceof LeavesCustomPayload leaves)) {
++            return payload;
++        }
++        final ResourceLocation id = LeavesProtocolManager.payloadId(leaves);
++        if (id == null) {
++            throw new IllegalArgumentException("LeavesCustomPayload without @ID: " + payload.getClass());
++        }
++        final FriendlyByteBuf body = new FriendlyByteBuf(Unpooled.buffer());
++        LeavesProtocolManager.encodeBody(body, leaves);
++        return new DiscardedPayload(id, body);
++    }
++    // Oneiric end - LeavesCustomPayload 出站适配
++
+     public static RegistryFriendlyByteBuf decorate(ByteBuf buf) {
+         return BUF_DECORATOR.apply(buf);
+     }

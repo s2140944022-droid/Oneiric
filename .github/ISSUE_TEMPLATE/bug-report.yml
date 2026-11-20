@@ -1,0 +1,65 @@
+name: Bug 反馈 / Bug report
+description: 报告服务端 Bug、插件不兼容或其他行为问题。Report a server bug, plugin incompatibility, or other behavior issue.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认这**真的**是服务端 Bug，而不是原版特性、客户端 Bug 或插件自身的 Bug。
+        Please make sure you are **actually** hitting a **server-side** bug, not a vanilla feature, a client bug, or a bug inside a plugin.
+
+  - type: input
+    id: version
+    attributes:
+      label: Oneiric 版本 / Oneiric version
+      description: 在控制台执行 `/version`，把完整输出原样贴到这里。Run `/version` and paste the full, unmodified output.
+      placeholder: 'e.g. git-Oneiric-"a1b2c3d"+b0.14 (MC: 1.21.1)'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为 / Expected behavior
+      description: 你期望发生什么。What you expected to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为 / Actual behavior
+      description: 实际发生了什么。请附完整报错堆栈（不要只截一行）。What actually happened. Include the full stacktrace, not just one line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 尽量具体；有录像、原理图或截图请一并附上。Be specific. Attach a recording, schematic, or screenshot if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: plugins
+    attributes:
+      label: 插件与数据包 / Plugins and datapacks
+      description: 执行 `/plugins` 与 `/datapack list` 并粘贴结果。Run `/plugins` and `/datapack list`, then paste the output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置 / Relevant config
+      description: |
+        与问题相关的 `oneiric.yml` 段落，以及 `server.properties` 里的关键项。
+        The relevant `oneiric.yml` section, plus key entries from `server.properties`.
+        **提交前请删除服务器 IP、RCON 密码等信息。** Remove any server IP or RCON password before submitting.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他 / Anything else

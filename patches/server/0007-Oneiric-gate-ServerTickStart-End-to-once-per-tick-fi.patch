@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 01:19:01 +0800
+Subject: [PATCH] Oneiric: gate ServerTickStart/End to once per tick (fixes
+ spark/ClearLag TPS buffer overflow under Folia region concurrency)
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index d52999fcf0e4c9a045a5798ab721c244e27c8f04..02aa5a80165e035575deb7eb2252e4f4da5f5ec3 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -40,6 +40,10 @@ public final class OneiricConfig {
+             "compat-sync-teleport",
+             // 插件 API 兼容：可修改的传送事件（EntityTeleportEvent / PlayerTeleportEvent.getTo）。
+             "compat-teleport-event",
++            // 插件 API 兼容：ServerTickStartEvent / ServerTickEndEvent 每 server tick 只触发一次。
++            // 默认开 —— 否则 spark / ClearLag 这类"每 tick 滚动平均"的插件会在
++            // Folia 的多区域并发触发下把定长环形缓冲写越界（实测 837 次/分钟）。
++            "compat-single-tick-event",
+             // 性能热路径：复用实体查询缓冲区。默认开；纯分配优化，不改变查询结果与顺序。
+             "entity-query-reuse",
+             "activation-query-reuse",
+@@ -104,6 +108,7 @@ public final class OneiricConfig {
+             // ── 插件 API 兼容
+             "compat-sync-teleport",
+             "compat-teleport-event",
++            "compat-single-tick-event",
+             // ── 性能热路径（分配复用，不改变行为）
+             "entity-query-reuse",
+             "activation-query-reuse",
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricTickEventGate.java b/src/main/java/io/papermc/paper/oneiric/OneiricTickEventGate.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef628d8932daa5d0be491e823c550a9bc3b4cd3b
+--- /dev/null
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricTickEventGate.java
+@@ -0,0 +1,100 @@
++package io.papermc.paper.oneiric;
++
++import java.util.concurrent.atomic.AtomicLong;
++
++/**
++ * Oneiric - {@code ServerTickStartEvent} / {@code ServerTickEndEvent} 的每 tick 闸门。
++ *
++ * <h2>为什么需要它</h2>
++ *
++ * <p>Paper 的语义是「每个 server tick 触发一次」。Folia 在自己的补丁
++ * （{@code 0003-Threaded-Regions.patch}）里把这句从原来的位置挪进了
++ * <b>区域 tick 循环</b>，于是有 N 个 tick 线程就有 N 次并发触发。</p>
++ *
++ * <p>事件本身无害，但监听者会坏掉：spark 的 {@code SparkTickStatistics}
++ * 与 ClearLag 的 TPS tracker 都按「每 tick 一次」写的，用定长数组做滚动平均，
++ * 并发 {@code add} 会把索引推到数组外。实测 spark 在正式服每分钟抛
++ * 837 次 {@code ArrayIndexOutOfBoundsException}。</p>
++ *
++ * <h2>为什么不用 tick 计数器</h2>
++ *
++ * <p>试过两条路，都不成立：</p>
++ * <ul>
++ *   <li>{@code RegionizedServer.getCurrentTick()} 返回的是<b>当前区域</b>的 tick，
++ *       而且在没有区域上下文时抛异常。不同区域的 currentTick 在同一全局 tick 内
++ *       可能不同，用它做代际会漏放或重复放行。</li>
++ *   <li>{@code RegionizedServer.tickCount} 在 {@code globalTick} 里递增，
++ *       而 {@code globalTick} 是<b>每个区域每 tick</b> 都调一次的 ——
++ *       它同样随区域数量增长，也不能当全局 tick 用。</li>
++ * </ul>
++ *
++ * <h2>实际做法：按真实时间分桶</h2>
++ *
++ * <p>用 {@link System#nanoTime()} 除以目标 tick 周期得到「时间桶编号」，
++ * 同一个桶内只放行一次。这与「每个 server tick 一次」在语义上等价
++ * （目标 tick 周期就是 50ms），但不依赖任何区域的 tick 计数，
++ * 也不会因为区域数变化而漂移。</p>
++ *
++ * <p>放行的是「第一个到达的线程」，不是「server 主线程」—— Folia 里
++ * 区域 tick 本来就不在 server 线程上跑，强行回到 server 线程会引入跨线程调度。</p>
++ */
++public final class OneiricTickEventGate {
++
++    /** 目标 tick 周期（纳秒）。20 TPS = 50ms。 */
++    private static final long TICK_NANOS = 50_000_000L;
++    /** 连续两个桶被视为「同一 tick」的容差，避免 49.9ms / 50.1ms 跨桶抖动。 */
++    private static final long WINDOW_NANOS = TICK_NANOS + TICK_NANOS / 2;
++
++    private static final AtomicLong LAST_START = new AtomicLong(Long.MIN_VALUE);
++    private static final AtomicLong LAST_END = new AtomicLong(Long.MIN_VALUE);
++
++    private OneiricTickEventGate() {
++    }
++
++    /** 当前时间桶（单调）。 */
++    private static long bucket() {
++        return System.nanoTime() / TICK_NANOS;
++    }
++
++    /**
++     * start 事件是否应放行。
++     *
++     * <p>用 CAS 推进「最后一次放行的时间戳」：只有当当前时间距上次放行
++     * 超过 {@link #WINDOW_NANOS} 时才放行。并发调用中只有一个线程能成功推进，
++     * 其余直接返回 false。</p>
++     */
++    public static boolean allowStart() {
++        return allow(LAST_START);
++    }
++
++    /** 同 {@link #allowStart()}，用于 end 事件。 */
++    public static boolean allowEnd() {
++        return allow(LAST_END);
++    }
++
++    private static boolean allow(final AtomicLong last) {
++        final long now = System.nanoTime();
++        while (true) {
++            final long prev = last.get();
++            // 时间戳未初始化时直接放行（服务器刚启动）。
++            if (prev != Long.MIN_VALUE && now - prev < WINDOW_NANOS) {
++                return false;
++            }
++            if (last.compareAndSet(prev, now)) {
++                return true;
++            }
++        }
++    }
++
++    /** 状态行用。 */
++    public static String status() {
++        final long now = System.nanoTime();
++        return "tick-event-gate(bucket=" + bucket()
++            + " startAge=" + msAge(now, LAST_START.get()) + "ms"
++            + " endAge=" + msAge(now, LAST_END.get()) + "ms)";
++    }
++
++    private static String msAge(final long now, final long then) {
++        return then == Long.MIN_VALUE ? "never" : Long.toString((now - then) / 1_000_000L);
++    }
++}
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index fe7945b2e08d9e5cac4d702506fe019c0d4864dc..b0d8dc8730d63bcf73895e9ff07a6eb10e795547 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -197,6 +197,12 @@ public final class OneiricYml {
+                 "让老插件的 entity.teleport(loc) 重新可用：Folia 原本在 teleport0 里无条件抛异常。",
+                 "Folia 自己的 teleportAsync 本来就有 same-region 快路径是同步完成的，条件成立时走它，同步语义不撒谎。",
+                 "条件不成立（跨区/跨世界/未加载）时它返回 false 而不是假装成功——这是设计，不是缺陷。");
++        block(sb, "compat-single-tick-event", true, "每 tick 只触发一次 tick 事件",
++                "ServerTickStartEvent / ServerTickEndEvent 在每个 server tick 只触发一次。",
++                "Folia 把这两个事件的触发点移进了每个区域的 tick 循环，多区域并发时会被多次触发。"
++                    + "spark 与 ClearLag 的 TPS 滚动平均都按「每 tick 一次」写，并发下会把定长数组写越界"
++                    + "（实测 spark 每分钟 837 次 ArrayIndexOutOfBoundsException）。",
++                "关掉即恢复 Folia 原生的每区域触发 —— 只在确认监听插件能处理并发时才关。");
+         block(sb, "compat-teleport-event", true, "可修改的传送事件",
+                 "补回 EntityTeleportEvent（非玩家实体）并让 PlayerTeleportEvent.getTo() 真正生效。",
+                 "Folia 只保留了能取消的玩家事件，且丢掉 getTo()；非玩家实体事件从未触发（上游此处原有一行 TODO）。",
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index 4d715d4f1af54a33374ebdf0e53aa68cadedb5c3..a2e52b4718cc28cacda732bcbbf866e6c83b4b81 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1672,7 +1672,21 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             return scheduledEnd - System.nanoTime() > targetBuffer;
+         };
+         if (false)this.server.spark.tickStart(); // Paper - spark // Luminol - Force disable builtin spark
+-        new com.destroystokyo.paper.event.server.ServerTickStartEvent((int)region.getCurrentTick()).callEvent(); // Paper
++        // Oneiric start - compat-single-tick-event
++        //
++        // 原版 Paper 每 tick 触发一次；Folia 把它放进了**每个区域**的 tick 循环，
++        // 于是 8 个 tick 线程会并发触发同一个 ServerTickStartEvent。
++        // spark / ClearLag 这类用定长环形缓冲做 TPS 滚动平均的插件并不线程安全，
++        // 并发 add 会把索引写出数组边界（实测 spark 每分钟 837 次 ArrayIndexOutOfBoundsException）。
++        //
++        // 这里保持 Folia 的调用位置，但加一道「每 server tick 只放行一次」的闸门：
++        // 插件看到的语义回到 Paper 的「每 tick 一次」，而区域化 tick 本身不受影响。
++        // 关掉本开关即恢复 Folia 原本的每区域触发。
++        if (!io.papermc.paper.oneiric.OneiricConfig.isEnabled("compat-single-tick-event")
++            || io.papermc.paper.oneiric.OneiricTickEventGate.allowStart()) {
++            new com.destroystokyo.paper.event.server.ServerTickStartEvent((int)region.getCurrentTick()).callEvent(); // Paper
++        }
++        // Oneiric end - compat-single-tick-event
+         // Folia end - region threading
+         co.aikar.timings.TimingsManager.FULL_SERVER_TICK.startTiming(); // Paper
+         long i = startTime; // Folia - region threading
+@@ -1805,7 +1819,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         // Paper start - Server Tick Events
+         long endTime = System.nanoTime();
+         long remaining = scheduledEnd - endTime; // Folia - region ticking
+-        new com.destroystokyo.paper.event.server.ServerTickEndEvent((int)io.papermc.paper.threadedregions.RegionizedServer.getCurrentTick(), ((double)(endTime - startTime) / 1000000D), remaining).callEvent(); // Folia - region ticking
++        // Oneiric start - compat-single-tick-event：与 tick start 同一道闸门，理由见上。
++        if (!io.papermc.paper.oneiric.OneiricConfig.isEnabled("compat-single-tick-event")
++            || io.papermc.paper.oneiric.OneiricTickEventGate.allowEnd()) {
++            new com.destroystokyo.paper.event.server.ServerTickEndEvent((int)io.papermc.paper.threadedregions.RegionizedServer.getCurrentTick(), ((double)(endTime - startTime) / 1000000D), remaining).callEvent(); // Folia - region ticking
++        }
++        // Oneiric end - compat-single-tick-event
+         if (false) this.server.spark.tickEnd(((double)(endTime - startTime) / 1000000D)); // Paper - spark // Folia - region ticking // Luminol - Force disable builtin spark
+         // Paper end - Server Tick Events
+         this.profiler.push("tallying");

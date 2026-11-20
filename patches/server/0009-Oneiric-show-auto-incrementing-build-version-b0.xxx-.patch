@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 02:25:45 +0800
+Subject: [PATCH] Oneiric: show auto-incrementing build version (+b0.xxx) in
+ ServerBuildInfo; stamp manifest from build-version.txt
+
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 542384829700a6101ea3a3d0c0009efda3b53cf6..2a91349d78f48d285e3b850bda23a6076d5d2bb4 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -94,13 +94,22 @@ tasks.jar {
+         val mcVersion = rootProject.providers.gradleProperty("mcVersion").get()
+         val build = System.getenv("BUILD_NUMBER") ?: null
+         val gitHash = git("rev-parse", "--short=7", "HEAD").getText().trim()
+-        val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash"
++        // Oneiric - 每次打包自动递增的小版本号（根 build.gradle.kts "自动小版本号"）。
++        // 直接读根目录 build-version.txt，不走 extra 跨项目传递（声明顺序容易踩坑）。
++        val buildCounter = rootProject.file("build-version.txt")
++            .readText().trim().toLongOrNull() ?: 0L
++        // Oneiric - 不用 String.format("%,.3f")：Kotlin DSL 里 "java.util.Locale" 会被
++        // 项目的 java 扩展遮蔽（根脚本就在这上面栽过一次），手动拼更稳。
++        val buildVersion = "${buildCounter / 1000}.${(buildCounter % 1000).toString().padStart(3, '0')}"
++        val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash+b$buildVersion"
+         val date = git("show", "-s", "--format=%ci", gitHash).getText().trim() // Paper
+         val gitBranch = git("rev-parse", "--abbrev-ref", "HEAD").getText().trim() // Paper
+         attributes(
+             "Main-Class" to "org.bukkit.craftbukkit.Main",
+             "Implementation-Title" to "Luminol", // Folia // Luminol
+             "Implementation-Version" to implementationVersion,
++            "Oneiric-Build-Version" to buildVersion, // Oneiric - 自动小版本号
++            "Oneiric-Build-Counter" to buildCounter.toString(), // Oneiric - 原始计数
+             "Implementation-Vendor" to date, // Paper
+             "Specification-Title" to "Luminol", // Folia // Luminol
+             "Specification-Version" to project.version,
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index ea22c4dbe497d2ce4df8f296035c377b53520aba..6e59bf25d84045c8d8069eca8671a8afef12614d 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -21,7 +21,8 @@ public record ServerBuildInfoImpl(
+     OptionalInt buildNumber,
+     Instant buildTime,
+     Optional<String> gitBranch,
+-    Optional<String> gitCommit
++    Optional<String> gitCommit,
++    String oneiricBuildVersion
+ ) implements ServerBuildInfo {
+     private static final String ATTRIBUTE_BRAND_ID = "Brand-Id";
+     private static final String ATTRIBUTE_BRAND_NAME = "Brand-Name";
+@@ -29,6 +30,7 @@ public record ServerBuildInfoImpl(
+     private static final String ATTRIBUTE_BUILD_NUMBER = "Build-Number";
+     private static final String ATTRIBUTE_GIT_BRANCH = "Git-Branch";
+     private static final String ATTRIBUTE_GIT_COMMIT = "Git-Commit";
++    private static final String ATTRIBUTE_ONEIRIC_BUILD = "Oneiric-Build-Version"; // Oneiric - 自动小版本号
+ 
+     private static final String BRAND_PAPER_NAME = "Paper";
+     private static final String BRAND_LUMINOL_NAME = "Oneiric"; //Oneiric
+@@ -56,7 +58,8 @@ public record ServerBuildInfoImpl(
+                 .map(Instant::parse)
+                 .orElse(Main.BOOT_TIME),
+             getManifestAttribute(manifest, ATTRIBUTE_GIT_BRANCH),
+-            getManifestAttribute(manifest, ATTRIBUTE_GIT_COMMIT)
++            getManifestAttribute(manifest, ATTRIBUTE_GIT_COMMIT),
++            getManifestAttribute(manifest, ATTRIBUTE_ONEIRIC_BUILD).orElse("") // Oneiric
+         );
+     }
+ 
+@@ -89,6 +92,14 @@ public record ServerBuildInfoImpl(
+         if (hasGitCommit) {
+             sb.append(this.gitCommit.get());
+         }
++        // Oneiric start - 显示自动小版本号（每次打包 +0.001）。
++        // 0.000 说明该 jar 没盖过版本章（例如手工重打包），此时不显示，避免误导。
++        if (representation == StringRepresentation.VERSION_FULL
++            && !this.oneiricBuildVersion.isEmpty()
++            && !"0.000".equals(this.oneiricBuildVersion)) {
++            sb.append("+b").append(this.oneiricBuildVersion);
++        }
++        // Oneiric end - 自动小版本号
+         if (representation == StringRepresentation.VERSION_FULL) {
+             sb.append(' ');
+             sb.append('(');

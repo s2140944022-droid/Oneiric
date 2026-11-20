@@ -1,0 +1,1710 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 19:17:10 +0800
+Subject: [PATCH] Oneiric: fill stub APIs, wire diagnostics, port PCA protocol,
+ adopt Leaves command tree
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricBaseRegion.java b/src/main/java/io/papermc/paper/oneiric/OneiricBaseRegion.java
+index 94c36a75228a4a16ba07f9661aec56a9934b467b..2a6ba211610b7f351af331d726893acef40a5fb7 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricBaseRegion.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricBaseRegion.java
+@@ -48,9 +48,21 @@ public final class OneiricBaseRegion {
+     private OneiricBaseRegion() {
+     }
+ 
+-    /** 基础区 X 坐标：**纯函数**，只依赖入参。 */
++    /**
++     * 基础区 X 坐标：**纯函数**，只依赖入参。
++     *
++     * <p>{@code chunkX >> SHIFT} 等价于向下取整的 {@code chunkX / 8}，
++     * 对负坐标同样正确（算术右移向下取整，而 Java 的 {@code /} 是向零取整，
++     * 所以这里必须用移位而不是除法）。</p>
++     */
++    public static int regionX(final int chunkX) {
++        return chunkX >> SHIFT;
++    }
+ 
+-    /** 基础区 Z 坐标：**纯函数**，只依赖入参。 */
++    /** 基础区 Z 坐标：**纯函数**，只依赖入参。理由同 {@link #regionX}。 */
++    public static int regionZ(final int chunkZ) {
++        return chunkZ >> SHIFT;
++    }
+ 
+     /** 把 (regionX, regionZ) 打包成一个 long，供 map key 与集合使用。 */
+     public static long key(final int regionX, final int regionZ) {
+@@ -63,14 +75,36 @@ public final class OneiricBaseRegion {
+     }
+ 
+     /** 解包：基础区 key → regionX。 */
++    public static int unpackX(final long key) {
++        return (int) (key >> 32);
++    }
+ 
+     /** 解包：基础区 key → regionZ。 */
++    public static int unpackZ(final long key) {
++        return (int) key;
++    }
+ 
+-    /** 该基础区覆盖的最小 chunk 坐标。 */
++    /** 该基础区覆盖的最小 chunk X 坐标（含）。 */
++    public static int minChunkX(final int regionX) {
++        return regionX << SHIFT;
++    }
+ 
+-    /** 该基础区覆盖的最小 chunk 坐标。 */
++    /** 该基础区覆盖的最小 chunk Z 坐标（含）。 */
++    public static int minChunkZ(final int regionZ) {
++        return regionZ << SHIFT;
++    }
+ 
+-    /** 两个 chunk 是否属于同一个基础区。 */
++    /**
++     * 两个 chunk 是否属于同一个基础区。
++     *
++     * <p>这是最常用的判定：比起算两次 key 再比较 long，直接比较两个移位结果更快，
++     * 也避免了 long 装箱。</p>
++     */
++    public static boolean sameBaseRegion(final int chunkX1, final int chunkZ1,
++                                         final int chunkX2, final int chunkZ2) {
++        return (chunkX1 >> SHIFT) == (chunkX2 >> SHIFT)
++                && (chunkZ1 >> SHIFT) == (chunkZ2 >> SHIFT);
++    }
+ 
+     /** 状态行片段。 */
+     public static String status() {
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricCommand.java b/src/main/java/io/papermc/paper/oneiric/OneiricCommand.java
+index 647026bf07929c74867b56754373af01e3408c64..7f5969a33d28f3fe6193567e6b2dfb741faf115d 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricCommand.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricCommand.java
+@@ -53,6 +53,18 @@ public final class OneiricCommand extends Command {
+         if (!testPermission(sender)) {
+             return true;
+         }
++        // Oneiric - 带参数的用法：
++        //   /oneiric           —— 多行状态（默认）
++        //   /oneiric line      —— 单行状态（便于粘到聊天/日志里）
++        //   /oneiric status    —— 同 line
++        // line() 以前零调用点，是死代码；现在给了它一个真实入口。
++        if (args.length > 0) {
++            final String sub = args[0].toLowerCase(java.util.Locale.ROOT);
++            if (sub.equals("line") || sub.equals("status")) {
++                sender.sendMessage(Component.text(OneiricStatus.line()).color(TextColor.color(0x55AAFF)));
++                return true;
++            }
++        }
+         // 多行输出：先给结论行，再给两个明细行。控制台日志保持干净（只在手敲命令时输出）。
+         sender.sendMessage(Component.text("[Oneiric] " + OneiricBaseRegion.status())
+                 .color(TextColor.color(0x55AAFF)));
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricPartitionHook.java b/src/main/java/io/papermc/paper/oneiric/OneiricPartitionHook.java
+index 97ee5a1d37df455d19c3142320031e97ea2528ee..274192f9bd027750fada7101ee360ea5395d0e87 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricPartitionHook.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricPartitionHook.java
+@@ -65,7 +65,9 @@ public final class OneiricPartitionHook {
+     }
+ 
+     /** 几何是否已对齐。 */
+-
++    public static boolean isAligned() {
++        return aligned;
++    }
+     /**
+      * 分区层是否生效。**这是总闸**：{@code region-tick} 关掉时，
+      * {@link #forceMerge} 与 {@link #vetoSplit} 全部直接返回 false，等于回到 Folia 原行为。
+@@ -92,8 +94,26 @@ public final class OneiricPartitionHook {
+      *
+      * @param hostSections  宿主 region 已有的 section key
+      * @param otherSections 待并入 region 的 section key
++     * @return true 表示**必须**把 {@code otherSections} 并入宿主
+      */
+-
++    public static boolean forceMerge(final Collection<Long> hostSections,
++                                     final Collection<Long> otherSections) {
++        if (!active() || otherSections.isEmpty()) {
++            return false;
++        }
++        // 宿主已有的簇集合（去重后通常只有 1~2 个）
++        final java.util.Set<Long> hostClusters = new java.util.HashSet<>(hostSections.size() * 2);
++        for (final Long section : hostSections) {
++            hostClusters.add(OneiricRegionPartition.find(section));
++        }
++        // 对方的任一个 section 属于宿主的簇 -> 必须并
++        for (final Long section : otherSections) {
++            if (hostClusters.contains(OneiricRegionPartition.find(section))) {
++                return true;
++            }
++        }
++        return false;
++    }
+     /**
+      * 在 {@code onRegionRelease} 算出分裂候选之后调用：判断按候选拆开是否会拆散某一簇。
+      *
+@@ -123,6 +143,17 @@ public final class OneiricPartitionHook {
+     }
+ 
+     /** 便于调用方构造：把 section 集合按簇分组，用于诊断输出。 */
++    public static List<List<Long>> groupByCluster(final Collection<Long> sections) {
++        final Map<Long, List<Long>> byCluster = new java.util.LinkedHashMap<>();
++        for (final Long section : sections) {
++            byCluster.computeIfAbsent(OneiricRegionPartition.find(section),
++                    k -> new ArrayList<>()).add(section);
++        }
++        return new ArrayList<>(byCluster.values());
++    }
+ 
+     /** 便于内核调用方把「section key」当作「基础区 key」查簇。 */
++    public static long clusterOf(final long sectionKey) {
++        return OneiricRegionPartition.find(sectionKey);
++    }
+ }
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricRegionPartition.java b/src/main/java/io/papermc/paper/oneiric/OneiricRegionPartition.java
+index d3cb2d33a506452a5a3d0933227e358027218d92..c1c7f30851c2a991e2755d65fd58c3d7895f7faf 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricRegionPartition.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricRegionPartition.java
+@@ -163,6 +163,9 @@ public final class OneiricRegionPartition {
+     }
+ 
+     /** 记一次真正的拆分。 */
++    public static void noteSplit() {
++        SPLITS.increment();
++    }
+ 
+     /**
+      * 记一次**主动强制合并**（regionizer 在 tick 边界把同簇的已分离区并起来）。
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricStatus.java b/src/main/java/io/papermc/paper/oneiric/OneiricStatus.java
+index 090b8e066c28956d8b90b40a3bbb9162b4bb581b..d4f62fb50233656b83596095ab9a139a4ffee2a7 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricStatus.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricStatus.java
+@@ -1,5 +1,6 @@
+ package io.papermc.paper.oneiric;
+ 
++import io.papermc.paper.threadedregions.RegionizedServer;
+ import io.papermc.paper.threadedregions.TickRegionScheduler;
+ import io.papermc.paper.threadedregions.TickRegions;
+ import io.papermc.paper.threadedregions.ThreadedRegionizer;
+@@ -28,6 +29,12 @@ import net.minecraft.server.level.ServerLevel;
+  *   <li>{@code 因粘性保持}（损失）；</li>
+  *   <li>{@code 因耦合否决}（不是损失）。</li>
+  * </ol>
++ *
++ * <h2>Oneiric - 这一版补齐了三处「永远是 0 / 永远是空」的诊断项</h2>
++ *
++ * <p>以前 {@code lagging} 恒为 0、{@code perRegionMspt} 恒为空列表、{@link #line()}
++ * 零调用点。前两项是<b>假数据</b>（看起来在工作，其实永远是 0），第三项是死代码。
++ * 三个都不报还好，报了 0 会让运维以为「没有区域掉队」—— 那比不报更危险。</p>
+  */
+ public final class OneiricStatus {
+ 
+@@ -58,6 +65,10 @@ public final class OneiricStatus {
+         int lagging = 0;
+         final List<String> perRegion = new ArrayList<>();
+ 
++        // 全局 tick 是判断「掉队」的参考系：区域自己的 currentTick 落后全局 >= 2
++        // 就说明它至少错过了一个完整周期（一个周期 = 1 tick）。
++        final long globalTick = currentGlobalTick();
++
+         try {
+             final MinecraftServer server = MinecraftServer.getServer();
+             if (server != null) {
+@@ -66,7 +77,7 @@ public final class OneiricStatus {
+                     if (regioniser == null) {
+                         continue;
+                     }
+-                    final int[] counts = countRegions(regioniser);
++                    final int[] counts = countRegions(regioniser, globalTick);
+                     regions += counts[0];
+                     ticking += counts[1];
+                     lagging += counts[2];
+@@ -94,8 +105,17 @@ public final class OneiricStatus {
+         );
+     }
+ 
++    /** 全局 tick；取不到时返回 -1（表示「无法判断掉队」，而不是「没有掉队」）。 */
++    private static long currentGlobalTick() {
++        try {
++            return RegionizedServer.getCurrentTick();
++        } catch (final Throwable ignored) {
++            return -1L;
++        }
++    }
++
+     /**
+-     * 统计单个世界 regionizer 的 区数 / TICKING 数。
++     * 统计单个世界 regionizer 的 区数 / TICKING 数 / 掉队数，并收集每区 MSPT。
+      *
+      * <p>{@code state} 是 {@code ThreadedRegion} 的公开字段，取值与内核常量一一对应：
+      * {@code 0=TRANSIENT / 1=READY / 2=TICKING / 3=DEAD}。这里用数值比较而不用常量名，
+@@ -106,16 +126,34 @@ public final class OneiricStatus {
+      * 用一个未加锁的遍历去读正在被合并/分裂的 {@code regionsById} 会直接崩服。
+      * 读锁的代价在这里完全可以接受 —— 状态命令是低频操作。</p>
+      *
+-     * <p>掉队数暂不采集：调度起点（{@code tickSchedule}）未通过任何公开 API 暴露，
+-     * 与其编造一个读数，不如不报。</p>
++     * @param globalTick 全局 tick，{@code < 0} 表示取不到，此时不判断掉队
+      */
+-    private static int[] countRegions(final ThreadedRegionizer< ? , ? > regioniser) {
++    private static int[] countRegions(final ThreadedRegionizer< ? , ? > regioniser,
++                                      final long globalTick) {
+         final int[] out = new int[3];
+         try {
+             regioniser.computeForAllRegions(region -> {
+                 out[0]++;
+                 if (region.state == 2) { // STATE_TICKING
+                     out[1]++;
++                    // Oneiric - 掉队判定：该区域自己的 tick 落后全局 tick >= 2。
++                    // 用 >= 2 而不是 >= 1：区域在「正在被 tick」的那一瞬间本来就可能是
++                    // globalTick-1，取 1 会把正常区域全算成掉队。
++                    if (globalTick >= 0) {
++                        try {
++                            // ThreadedRegion#getData() 返回 TickRegionData（泛型擦除后由调用方约定），
++                            // 它的 getCurrentTick() 是该区域自己推进到的 tick。
++                            final Object data = region.getData();
++                            if (data instanceof TickRegions.TickRegionData tickData) {
++                                final long regionTick = tickData.getCurrentTick();
++                                if (globalTick - regionTick >= 2L) {
++                                    out[2]++;
++                                }
++                            }
++                        } catch (final Throwable ignored) {
++                            // 单个区域取不到，不影响其它区域
++                        }
++                    }
+                 }
+             });
+         } catch (final Throwable ignored) {
+@@ -153,6 +191,10 @@ public final class OneiricStatus {
+               .append(" lagging=").append(laggingRegions)
+               .append(" tickThreads=").append(threads.tickThreads())
+               .append(" sectionShift=").append(sectionShift);
++            // Oneiric - 有逐区样本时才输出，避免打一个空的 "perRegion=[]"
++            if (!perRegionMspt.isEmpty()) {
++                sb.append(" perRegion=").append(perRegionMspt);
++            }
+             sb.append(" | ").append(OneiricParallelismReport.status(activeBaseRegions));
+             return sb.toString();
+         }
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index 44f622047e090bd521bfb80f292a96828be77617..16dbfc90473914869826bbbbd7946124e84866f9 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -336,14 +336,16 @@ public final class OneiricYml {
+                         + "但这正是排查「客户端 mod 不工作」时需要的信息。",
+                 "排查协议握手问题时临时打开。");
+         block(sb, "protocol-pca", false, "PCA 同步协议",
+-                "启用 PCA（Player Chest Access）同步协议，允许客户端读取容器内容。",
+-                "默认关，且**协议本体尚未移植**：开关已登记，但这一版没有 PcaSyncProtocol 实现，"
+-                        + "打开也不会生效。保留开关是为了日后移植时配置项不用再改。",
+-                "等协议本体移植后再用；现在打开没有效果。");
++                "启用 PCA（Player Chest Access）同步协议：客户端可以读取容器内容与实体 NBT，"
++                        + "用于调试漏斗链、比对箱子库存。",
++                "默认关：它会把容器内容持续推给客户端，是明确的「让客户端看到更多」功能，"
++                        + "需要玩家主动开启 /pca 才会真正生效，但协议本身仍应显式打开。",
++                "用 PCA / Carpet 客户端调试库存与实体数据时打开。");
+         block(sb, "protocol-pca-sync-player", false, "PCA 同步玩家实体",
+-                "PCA 协议的可选项：连玩家实体的数据一起同步。",
+-                "依赖 protocol-pca，同样**尚未生效**。",
+-                "同上，暂时无需改动。");
++                "PCA 协议的扩展：允许同步其他玩家实体的 NBT。",
++                "默认关，且语义是「只同步 op 与自己」，不是「同步所有人」—— "
++                        + "玩家实体的 NBT 含背包与坐标，广播给别人等于泄露隐私。",
++                "需要看自己或管理员的实体数据时打开；不要指望它能看普通玩家。");
+         block(sb, "protocol-syncmatica-quota", false, "Syncmatica 配额限制",
+                 "限制每个玩家可提交的投影数量，防止单人塞爆服端存储。",
+                 "默认关：小服/信任环境不需要；公开服建议打开。",
+diff --git a/src/main/java/io/papermc/paper/oneiric/command/OneiricCommandTree.java b/src/main/java/io/papermc/paper/oneiric/command/OneiricCommandTree.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..8fb789b082b28097291b850e761594e9b126d328
+--- /dev/null
++++ b/src/main/java/io/papermc/paper/oneiric/command/OneiricCommandTree.java
+@@ -0,0 +1,199 @@
++package io.papermc.paper.oneiric.command;
++
++import com.mojang.brigadier.builder.ArgumentBuilder;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import io.papermc.paper.command.brigadier.Commands;
++import io.papermc.paper.oneiric.OneiricBaseRegion;
++import io.papermc.paper.oneiric.OneiricConfig;
++import io.papermc.paper.oneiric.OneiricEntityDensity;
++import io.papermc.paper.oneiric.OneiricLongRangeCoupling;
++import io.papermc.paper.oneiric.OneiricParallelismReport;
++import io.papermc.paper.oneiric.OneiricPartitionHook;
++import io.papermc.paper.oneiric.OneiricRegionPartition;
++import io.papermc.paper.oneiric.OneiricStatus;
++import io.papermc.paper.oneiric.OneiricYml;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.TextColor;
++import org.leavesmc.leaves.command.CommandContext;
++import org.leavesmc.leaves.command.LiteralNode;
++import org.leavesmc.leaves.command.RootNode;
++
++/**
++ * Oneiric - {@code /oneiric} 命令树（用 Leaves 的命令框架）。
++ *
++ * <h2>为什么从手写 switch 换成节点树</h2>
++ *
++ * <p>原来 {@code OneiricCommand} 是一个 {@code org.bukkit.command.Command} 子类，
++ * 用 {@code args[0]} 手写分支。问题有三个：</p>
++ * <ol>
++ *   <li><b>补全靠手写</b>，加一个子命令要同时改 {@code execute} 和 {@code tabComplete}，
++ *       两处不同步就会出现"能执行但补全不出来"；</li>
++ *   <li><b>参数校验靠手写</b>，没有类型、没有范围，写错就走到 {@code NumberFormatException}；</li>
++ *   <li><b>注册走 {@code CommandMap}</b>，在 Paper 的 Brigadier 命令表上是不完整的
++ *       （命令能用，但客户端命令树里看不到参数提示）。</li>
++ * </ol>
++ *
++ * <p>换成 {@link RootNode} 后，子命令就是子节点，补全与校验由 Brigadier 自动给出，
++ * 注册走 {@code PaperCommands} 的 dispatcher，客户端能正确看到命令签名。</p>
++ *
++ * <h2>子命令</h2>
++ *
++ * <pre>
++ *   /oneiric              多行状态（默认）
++ *   /oneiric line         单行状态，便于粘到聊天/日志
++ *   /oneiric switches     全部开关的生效值
++ *   /oneiric density      实体密度热力图（需 entity-density 开关）
++ *   /oneiric brain        大脑细粒度计时（需 brain-profiling 开关）
++ * </pre>
++ */
++public final class OneiricCommandTree extends RootNode {
++
++    public static final String NAME = "oneiric";
++    private static final String PERM_BASE = "oneiric.commands";
++
++    public OneiricCommandTree() {
++        super(NAME, PERM_BASE);
++        this.children(
++                StatusNode::new,
++                LineNode::new,
++                SwitchesNode::new,
++                DensityNode::new,
++                BrainNode::new
++        );
++    }
++
++    @Override
++    protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++        return Commands.literal(NAME);
++    }
++
++    /**
++     * Oneiric - 无参数 {@code /oneiric} 直接出多行状态。
++     *
++     * <p>覆写 {@code execute} 会让 {@link org.leavesmc.leaves.command.CommandNode#canExecute()}
++     * 返回 true，从而给根节点挂上 executes()。不覆写的话 {@code /oneiric} 单独敲
++     * 只会报 "usage"，那是很差的体验 —— 状态命令的主用法就是不带参数。</p>
++     */
++    @Override
++    protected boolean execute(final CommandContext context) {
++        return StatusNode.print(context.getSender());
++    }
++
++    // ── 各子命令 ────────────────────────────────────────────────────────
++
++    /** 默认（无参数）：多行状态。 */
++    static final class StatusNode extends LiteralNode {
++        StatusNode() {
++            super("status");
++        }
++
++        @Override
++        protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++            return Commands.literal("status");
++        }
++
++        @Override
++        protected boolean execute(CommandContext context) {
++            return print(context.getSender());
++        }
++
++        /** 多行状态的唯一输出点（根节点与 status 子命令共用）。 */
++        static boolean print(final org.bukkit.command.CommandSender sender) {
++            sender.sendMessage(Component.text("[Oneiric] " + OneiricBaseRegion.status())
++                    .color(TextColor.color(0x55AAFF)));
++            sender.sendMessage(Component.text("  " + OneiricStatus.snapshot().describe()));
++            sender.sendMessage(Component.text("  " + OneiricRegionPartition.status()
++                    + " | " + OneiricPartitionHook.status()
++                    + " | " + OneiricLongRangeCoupling.status()
++                    + " | " + OneiricYml.status()));
++            sender.sendMessage(Component.text("  switches: " + OneiricConfig.status()));
++            return true;
++        }
++    }
++
++    /** 单行状态。 */
++    static final class LineNode extends LiteralNode {
++        LineNode() {
++            super("line");
++        }
++
++        @Override
++        protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++            return Commands.literal("line");
++        }
++
++        @Override
++        protected boolean execute(CommandContext context) {
++            context.getSender().sendMessage(
++                    Component.text(OneiricStatus.line()).color(TextColor.color(0x55AAFF)));
++            return true;
++        }
++    }
++
++    /** 全部开关的生效值。 */
++    static final class SwitchesNode extends LiteralNode {
++        SwitchesNode() {
++            super("switches");
++        }
++
++        @Override
++        protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++            return Commands.literal("switches");
++        }
++
++        @Override
++        protected boolean execute(CommandContext context) {
++            context.getSender().sendMessage(Component.text(OneiricConfig.status()));
++            return true;
++        }
++    }
++
++    /** 实体密度诊断。 */
++    static final class DensityNode extends LiteralNode {
++        DensityNode() {
++            super("density");
++        }
++
++        @Override
++        protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++            return Commands.literal("density");
++        }
++
++        @Override
++        protected boolean execute(CommandContext context) {
++            if (!OneiricConfig.isEnabled("entity-density")) {
++                context.getSender().sendMessage(Component.text(
++                        "实体密度诊断未开启（oneiric.yml 里的 entity-density）",
++                        net.kyori.adventure.text.format.NamedTextColor.RED));
++                return true;
++            }
++            context.getSender().sendMessage(Component.text(OneiricEntityDensity.report()));
++            return true;
++        }
++    }
++
++    /** 大脑细粒度计时。 */
++    static final class BrainNode extends LiteralNode {
++        BrainNode() {
++            super("brain");
++        }
++
++        @Override
++        protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++            return Commands.literal("brain");
++        }
++
++        @Override
++        protected boolean execute(CommandContext context) {
++            if (!OneiricConfig.isEnabled("brain-profiling")) {
++                context.getSender().sendMessage(Component.text(
++                        "大脑诊断未开启（oneiric.yml 里的 brain-profiling）",
++                        net.kyori.adventure.text.format.NamedTextColor.RED));
++                return true;
++            }
++            context.getSender().sendMessage(Component.text(
++                    net.minecraft.world.entity.ai.OneiricBrainProfiling.report()));
++            return true;
++        }
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+index 549f3a60cd441ea972dd1fc6bd897bb60960aced..7de271cdd4808944cb43e5700fd2fd731295f02f 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -234,7 +234,14 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         // 位置选在这里的理由：此刻 Paper/Luminol 配置已就绪、命令表已存在，而世界尚未开始 tick。
+         io.papermc.paper.oneiric.OneiricYml.writeIfMissing(this.server.getWorldContainer().toPath());
+         io.papermc.paper.oneiric.OneiricYml.load(this.server.getWorldContainer().toPath());
+-        io.papermc.paper.oneiric.OneiricCommand.register(); // Oneiric - /oneiric 状态命令
++        // Oneiric - /oneiric 状态命令：走 Leaves 命令框架（Brigadier 节点树），
++        // 子命令 /oneiric line|switches|density|brain 由节点自动补全与校验。
++        try {
++            new io.papermc.paper.oneiric.command.OneiricCommandTree().register();
++        } catch (final Throwable t) {
++            org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
++                    "[Oneiric] 注册 /oneiric 命令失败（不影响启动）: {}", t.toString());
++        }
+         org.leavesmc.leaves.command.CounterCommand.register(); // Oneiric - /counter 羊毛漏斗计数器
+         org.leavesmc.leaves.command.PhotographerCommand.register(); // Oneiric - /photographer 回放摄影师
+         org.leavesmc.leaves.bot.BotCommand.register(); // Oneiric - /bot 假玩家
+diff --git a/src/main/java/org/leavesmc/leaves/command/ArgumentNode.java b/src/main/java/org/leavesmc/leaves/command/ArgumentNode.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc134eed4eb0706da1885015e1dde16442eb54cc
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/ArgumentNode.java
+@@ -0,0 +1,66 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.arguments.ArgumentType;
++import com.mojang.brigadier.builder.ArgumentBuilder;
++import com.mojang.brigadier.builder.RequiredArgumentBuilder;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.suggestion.Suggestions;
++import com.mojang.brigadier.suggestion.SuggestionsBuilder;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import io.papermc.paper.command.brigadier.Commands;
++import org.jetbrains.annotations.Contract;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.List;
++import java.util.concurrent.CompletableFuture;
++
++public abstract class ArgumentNode<T> extends CommandNode {
++    protected final ArgumentType<T> argumentType;
++
++    protected ArgumentNode(String name, ArgumentType<T> argumentType) {
++        super(name);
++        this.argumentType = argumentType;
++    }
++
++    @SuppressWarnings({"unused", "RedundantThrows"})
++    protected CompletableFuture<Suggestions> getSuggestions(final CommandContext context, final SuggestionsBuilder builder) throws CommandSyntaxException {
++        return Suggestions.empty();
++    }
++
++    protected boolean overrideSuggestions() {
++        return isMethodOverridden("getSuggestions", ArgumentNode.class);
++    }
++
++    @Override
++    protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++        RequiredArgumentBuilder<CommandSourceStack, T> argumentBuilder = Commands.argument(name, argumentType);
++
++        if (overrideSuggestions()) {
++            argumentBuilder.suggests(
++                (context, builder) -> getSuggestions(new CommandContext(context), builder)
++            );
++        }
++
++        return argumentBuilder;
++    }
++
++    public static class ArgumentSuggestions {
++        @Contract(pure = true)
++        public static WrappedArgument.@NotNull SuggestionApplier strings(String... values) {
++            return (context, builder) -> {
++                for (String s : values) {
++                    builder.suggest(s);
++                }
++            };
++        }
++
++        @Contract(pure = true)
++        public static WrappedArgument.@NotNull SuggestionApplier strings(List<String> values) {
++            return (context, builder) -> {
++                for (String s : values) {
++                    builder.suggest(s);
++                }
++            };
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/CommandContext.java b/src/main/java/org/leavesmc/leaves/command/CommandContext.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..21dee9f9cfba672c307e29c64029de88842541fd
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/CommandContext.java
+@@ -0,0 +1,125 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.Command;
++import com.mojang.brigadier.RedirectModifier;
++import com.mojang.brigadier.context.ParsedCommandNode;
++import com.mojang.brigadier.context.StringRange;
++import com.mojang.brigadier.tree.CommandNode;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import org.bukkit.command.CommandSender;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.List;
++
++import static org.leavesmc.leaves.command.CommandNode.getNameForNode;
++
++@SuppressWarnings({"ClassCanBeRecord", "unused"})
++public class CommandContext {
++    private final com.mojang.brigadier.context.CommandContext<CommandSourceStack> source;
++
++    public CommandContext(com.mojang.brigadier.context.CommandContext<CommandSourceStack> source) {
++        this.source = source;
++    }
++
++    public com.mojang.brigadier.context.CommandContext<CommandSourceStack> getChild() {
++        return source.getChild();
++    }
++
++    public com.mojang.brigadier.context.CommandContext<CommandSourceStack> getLastChild() {
++        return source.getLastChild();
++    }
++
++    public Command<CommandSourceStack> getCommand() {
++        return source.getCommand();
++    }
++
++    public CommandSourceStack getSource() {
++        return source.getSource();
++    }
++
++    public CommandSender getSender() {
++        return source.getSource().getSender();
++    }
++
++    public <V> @NotNull V getArgument(final String name, final Class<V> clazz) {
++        return source.getArgument(name, clazz);
++    }
++
++    public int getInteger(final String name) {
++        return source.getArgument(name, Integer.class);
++    }
++
++    public boolean getBoolean(final String name) {
++        return source.getArgument(name, Boolean.class);
++    }
++
++    public String getString(final String name) {
++        return source.getArgument(name, String.class);
++    }
++
++    @SuppressWarnings("unchecked")
++    public <V> @NotNull V getArgument(final Class<? extends ArgumentNode<V>> nodeClass) {
++        String name = getNameForNode(nodeClass);
++        return (V) source.getArgument(name, Object.class);
++    }
++
++    public <V> V getArgumentOrDefault(final Class<? extends ArgumentNode<V>> nodeClass, final V defaultValue) {
++        try {
++            return getArgument(nodeClass);
++        } catch (IllegalArgumentException e) {
++            return defaultValue;
++        }
++    }
++
++    public <V> V getArgumentOrDefault(final String name, final Class<V> clazz, final V defaultValue) {
++        try {
++            return source.getArgument(name, clazz);
++        } catch (IllegalArgumentException e) {
++            return defaultValue;
++        }
++    }
++
++    public String getStringOrDefault(final String name, final String defaultValue) {
++        return getArgumentOrDefault(name, String.class, defaultValue);
++    }
++
++    public int getIntegerOrDefault(final String name, final int defaultValue) {
++        return getArgumentOrDefault(name, Integer.class, defaultValue);
++    }
++
++    public float getFloatOrDefault(final String name, final float defaultValue) {
++        return getArgumentOrDefault(name, Float.class, defaultValue);
++    }
++
++    public RedirectModifier<CommandSourceStack> getRedirectModifier() {
++        return source.getRedirectModifier();
++    }
++
++    public StringRange getRange() {
++        return source.getRange();
++    }
++
++    public String getInput() {
++        return source.getInput();
++    }
++
++    public CommandNode<CommandSourceStack> getRootNode() {
++        return source.getRootNode();
++    }
++
++    public List<ParsedCommandNode<CommandSourceStack>> getNodes() {
++        return source.getNodes();
++    }
++
++    public boolean hasNodes() {
++        return source.hasNodes();
++    }
++
++    public boolean isForked() {
++        return source.isForked();
++    }
++
++    public com.mojang.brigadier.context.CommandContext<CommandSourceStack> getMojangContext() {
++        return source;
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/CommandNode.java b/src/main/java/org/leavesmc/leaves/command/CommandNode.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a64036424838c7b47cc74e4426dd335e1c66709
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/CommandNode.java
+@@ -0,0 +1,79 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.builder.ArgumentBuilder;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import org.jetbrains.annotations.NotNull;
++
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.function.Supplier;
++import java.util.stream.Stream;
++
++public abstract class CommandNode {
++    private static final Map<Class<? extends CommandNode>, String> class2NameMap = new HashMap<>();
++
++    protected final String name;
++    protected final List<CommandNode> children = new ArrayList<>();
++
++    protected CommandNode(String name) {
++        this.name = name;
++        class2NameMap.put(getClass(), name);
++    }
++
++    @SafeVarargs
++    protected final void children(Supplier<? extends CommandNode>... childrenClasses) {
++        this.children.addAll(Stream.of(childrenClasses).map(Supplier::get).toList());
++    }
++
++    protected abstract ArgumentBuilder<CommandSourceStack, ?> compileBase();
++
++    protected boolean execute(CommandContext context) throws CommandSyntaxException {
++        return true;
++    }
++
++    public boolean requires(CommandSourceStack source) {
++        return true;
++    }
++
++    public String getName() {
++        return this.name;
++    }
++
++    protected ArgumentBuilder<CommandSourceStack, ?> compile() {
++        ArgumentBuilder<CommandSourceStack, ?> builder = compileBase().requires(this::requires);
++
++        for (CommandNode child : children) {
++            builder = builder.then(child.compile());
++        }
++
++        if (canExecute()) {
++            builder = builder.executes(mojangCtx -> {
++                CommandContext ctx = new CommandContext(mojangCtx);
++                return execute(ctx) ? 1 : 0;
++            });
++        }
++
++        return builder;
++    }
++
++    protected boolean canExecute() {
++        return isMethodOverridden("execute", CommandNode.class);
++    }
++
++    protected boolean isMethodOverridden(String methodName, @NotNull Class<?> baseClass) {
++        for (Method method : getClass().getDeclaredMethods()) {
++            if (method.getName().equals(methodName)) {
++                return method.getDeclaringClass() != baseClass;
++            }
++        }
++        return false;
++    }
++
++    public static String getNameForNode(Class<? extends CommandNode> nodeClass) {
++        return class2NameMap.get(nodeClass);
++    }
++}
+\ No newline at end of file
+diff --git a/src/main/java/org/leavesmc/leaves/command/CommandUtils.java b/src/main/java/org/leavesmc/leaves/command/CommandUtils.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdf3d41c4eed34b5615a85c84e9920107d1cdbc0
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/CommandUtils.java
+@@ -0,0 +1,138 @@
++package org.leavesmc.leaves.command;
++
++import com.google.common.base.Functions;
++import com.google.common.collect.Iterables;
++import com.google.common.collect.Lists;
++import org.bukkit.Bukkit;
++import org.bukkit.permissions.Permission;
++import org.bukkit.permissions.PermissionDefault;
++import org.bukkit.plugin.PluginManager;
++import org.checkerframework.checker.nullness.qual.NonNull;
++import org.checkerframework.framework.qual.DefaultQualifier;
++import org.jetbrains.annotations.Contract;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.Collections;
++import java.util.Comparator;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++public class CommandUtils {
++
++    public static void registerPermissions(String base, @NotNull List<? extends CommandNode> children) {
++        List<String> permissions = new ArrayList<>();
++        permissions.add(base);
++        permissions.addAll(children.stream().map((it) -> base + "." + it.getName()).toList());
++        registerPermissions(permissions);
++    }
++
++    public static void registerPermissions(@NotNull List<String> permissions) {
++        PluginManager pluginManager = Bukkit.getServer().getPluginManager();
++        for (String perm : permissions) {
++            if (pluginManager.getPermission(perm) == null) {
++                pluginManager.addPermission(new Permission(perm, PermissionDefault.OP));
++            }
++        }
++    }
++
++    @DefaultQualifier(NonNull.class)
++    public static List<String> getListClosestMatchingLast(final String last, final Collection<?> collection) {
++        if (collection.isEmpty()) {
++            return Collections.emptyList();
++        }
++
++        ArrayList<Candidate> candidates = Lists.newArrayList();
++        String lastLower = last.toLowerCase();
++        for (String item : Iterables.transform(collection, Functions.toStringFunction())) {
++            String itemLower = item.toLowerCase();
++            if (itemLower.startsWith(lastLower)) {
++                candidates.add(Candidate.of(item, 0));
++            } else if (itemLower.contains(lastLower)) {
++                candidates.add(Candidate.of(item, damerauLevenshteinDistance(lastLower, itemLower)));
++            }
++        }
++        candidates.sort(Comparator.comparingInt(Candidate::score));
++
++        List<String> results = new ArrayList<>(candidates.size());
++        for (Candidate candidate : candidates) {
++            results.add(candidate.item);
++        }
++
++        return results;
++    }
++
++    /**
++     * Computes the Dameraur-Levenshtein Distance between two strings. Adapted
++     * from the algorithm at <a href="http://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance">Wikipedia: Damerau–Levenshtein distance</a>
++     *
++     * @param s1 The first string being compared.
++     * @param s2 The second string being compared.
++     * @return The number of substitutions, deletions, insertions, and
++     * transpositions required to get from s1 to s2.
++     */
++    @SuppressWarnings("DuplicatedCode")
++    private static int damerauLevenshteinDistance(@Nullable String s1, @Nullable String s2) {
++        if (s1 == null && s2 == null) {
++            return 0;
++        }
++        if (s1 != null && s2 == null) {
++            return s1.length();
++        }
++        if (s1 == null) {
++            return s2.length();
++        }
++
++        int s1Len = s1.length();
++        int s2Len = s2.length();
++        int[][] H = new int[s1Len + 2][s2Len + 2];
++
++        int INF = s1Len + s2Len;
++        H[0][0] = INF;
++        for (int i = 0; i <= s1Len; i++) {
++            H[i + 1][1] = i;
++            H[i + 1][0] = INF;
++        }
++        for (int j = 0; j <= s2Len; j++) {
++            H[1][j + 1] = j;
++            H[0][j + 1] = INF;
++        }
++
++        Map<Character, Integer> sd = new HashMap<>();
++        for (char Letter : (s1 + s2).toCharArray()) {
++            if (!sd.containsKey(Letter)) {
++                sd.put(Letter, 0);
++            }
++        }
++
++        for (int i = 1; i <= s1Len; i++) {
++            int DB = 0;
++            for (int j = 1; j <= s2Len; j++) {
++                int i1 = sd.get(s2.charAt(j - 1));
++                int j1 = DB;
++
++                if (s1.charAt(i - 1) == s2.charAt(j - 1)) {
++                    H[i + 1][j + 1] = H[i][j];
++                    DB = j;
++                } else {
++                    H[i + 1][j + 1] = Math.min(H[i][j], Math.min(H[i + 1][j], H[i][j + 1])) + 1;
++                }
++
++                H[i + 1][j + 1] = Math.min(H[i + 1][j + 1], H[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1));
++            }
++            sd.put(s1.charAt(i - 1), i);
++        }
++
++        return H[s1Len + 1][s2Len + 1];
++    }
++
++    private record Candidate(String item, int score) {
++        @Contract("_, _ -> new")
++        private static @NotNull Candidate of(String item, int score) {
++            return new Candidate(item, score);
++        }
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/LiteralNode.java b/src/main/java/org/leavesmc/leaves/command/LiteralNode.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..340f389cd660f5ffb882dc2f6da4efbe43cb9c63
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/LiteralNode.java
+@@ -0,0 +1,17 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.builder.ArgumentBuilder;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import io.papermc.paper.command.brigadier.Commands;
++
++public class LiteralNode extends CommandNode {
++
++    protected LiteralNode(String name) {
++        super(name);
++    }
++
++    @Override
++    protected ArgumentBuilder<CommandSourceStack, ?> compileBase() {
++        return Commands.literal(name);
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/RootNode.java b/src/main/java/org/leavesmc/leaves/command/RootNode.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7eea23099d1c480e9512c575ae614ec55781894
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/RootNode.java
+@@ -0,0 +1,68 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.builder.ArgumentBuilder;
++import com.mojang.brigadier.builder.LiteralArgumentBuilder;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import io.papermc.paper.command.brigadier.PaperCommands;
++import org.bukkit.Bukkit;
++import org.bukkit.command.CommandSender;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.HashMap;
++import java.util.Map;
++
++import static org.leavesmc.leaves.command.CommandUtils.registerPermissions;
++
++public abstract class RootNode extends LiteralNode {
++
++    private static final Map<String, LiteralArgumentBuilder<CommandSourceStack>> LEAVES_COMMANDS = new HashMap<>();
++
++    public static void reloadLeavesCommands() {
++        PaperCommands.INSTANCE.setValid();
++        for (Map.Entry<String, LiteralArgumentBuilder<CommandSourceStack>> entry : LEAVES_COMMANDS.entrySet()) {
++            PaperCommands.INSTANCE.getDispatcher().register(entry.getValue());
++        }
++        PaperCommands.INSTANCE.invalidate();
++        Bukkit.getOnlinePlayers().forEach(org.bukkit.entity.Player::updateCommands);
++    }
++
++    private final String permissionBase;
++
++    public RootNode(String name, String permissionBase) {
++        super(name);
++        this.permissionBase = permissionBase;
++    }
++
++    @Override
++    protected ArgumentBuilder<CommandSourceStack, ?> compile() {
++        registerPermissions(permissionBase, this.children);
++        return super.compile();
++    }
++
++    protected static boolean hasPermission(@NotNull CommandSender sender, String subcommand, String permissionBase) {
++        return sender.hasPermission(permissionBase) || sender.hasPermission(permissionBase + "." + subcommand);
++    }
++
++    @Override
++    public boolean requires(@NotNull CommandSourceStack source) {
++        return children.stream().anyMatch(child -> child.requires(source));
++    }
++
++    @SuppressWarnings("unchecked")
++    public void register() {
++        LiteralArgumentBuilder<CommandSourceStack> builder = (LiteralArgumentBuilder<CommandSourceStack>) compile();
++        LEAVES_COMMANDS.put(name, builder);
++        PaperCommands.INSTANCE.setValid();
++        PaperCommands.INSTANCE.getDispatcher().register(builder);
++        PaperCommands.INSTANCE.invalidate();
++        Bukkit.getOnlinePlayers().forEach(org.bukkit.entity.Player::updateCommands);
++    }
++
++    public void unregister() {
++        PaperCommands.INSTANCE.setValid();
++        PaperCommands.INSTANCE.getDispatcher().getRoot().removeCommand(name);
++        PaperCommands.INSTANCE.invalidate();
++        LEAVES_COMMANDS.remove(name);
++        Bukkit.getOnlinePlayers().forEach(org.bukkit.entity.Player::updateCommands);
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/WrappedArgument.java b/src/main/java/org/leavesmc/leaves/command/WrappedArgument.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c3326fb05ff1d837ba96cffa50198387d05ade8
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/WrappedArgument.java
+@@ -0,0 +1,68 @@
++package org.leavesmc.leaves.command;
++
++import com.mojang.brigadier.arguments.ArgumentType;
++import com.mojang.brigadier.builder.RequiredArgumentBuilder;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.suggestion.Suggestions;
++import com.mojang.brigadier.suggestion.SuggestionsBuilder;
++import io.papermc.paper.command.brigadier.CommandSourceStack;
++import io.papermc.paper.command.brigadier.Commands;
++
++import java.util.concurrent.CompletableFuture;
++
++public class WrappedArgument<T> {
++    private final String name;
++    private final ArgumentType<T> type;
++    private AsyncSuggestionProvider asyncSuggestionProvider = null;
++    private SuggestionApplier suggestionApplier = null;
++    private boolean optional = false;
++
++    public WrappedArgument(String name, ArgumentType<T> type) {
++        this.name = name;
++        this.type = type;
++    }
++
++    public WrappedArgument<T> suggestsAsync(AsyncSuggestionProvider provider) {
++        this.asyncSuggestionProvider = provider;
++        return this;
++    }
++
++    public WrappedArgument<T> suggests(SuggestionApplier provider) {
++        this.suggestionApplier = provider;
++        return this;
++    }
++
++    public WrappedArgument<T> setOptional(boolean optional) {
++        this.optional = optional;
++        return this;
++    }
++
++    public boolean isOptional() {
++        return optional;
++    }
++
++    public RequiredArgumentBuilder<CommandSourceStack, T> compile() {
++        RequiredArgumentBuilder<CommandSourceStack, T> builder = Commands.argument(name, type);
++        if (asyncSuggestionProvider != null) {
++            builder.suggests((context, b) ->
++                asyncSuggestionProvider.getSuggestions(new CommandContext(context), b)
++            );
++        } else if (suggestionApplier != null) {
++            builder.suggests((context, b) -> {
++                suggestionApplier.applySuggestions(new CommandContext(context), b);
++                return CompletableFuture.completedFuture(b.build());
++            });
++        }
++        return builder;
++    }
++
++    @FunctionalInterface
++    public interface SuggestionApplier {
++        void applySuggestions(final CommandContext context, final SuggestionsBuilder builder) throws CommandSyntaxException;
++    }
++
++    @FunctionalInterface
++    public interface AsyncSuggestionProvider {
++        CompletableFuture<Suggestions> getSuggestions(final CommandContext context, final SuggestionsBuilder builder) throws CommandSyntaxException;
++    }
++}
+diff --git a/src/main/java/org/leavesmc/leaves/command/arguments/EnumArgumentType.java b/src/main/java/org/leavesmc/leaves/command/arguments/EnumArgumentType.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef90de034d469496b4cc9f3cf0f612b12f570e0b
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/command/arguments/EnumArgumentType.java
+@@ -0,0 +1,81 @@
++package org.leavesmc.leaves.command.arguments;
++
++import com.mojang.brigadier.arguments.ArgumentType;
++import com.mojang.brigadier.arguments.StringArgumentType;
++import com.mojang.brigadier.context.CommandContext;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.suggestion.Suggestions;
++import com.mojang.brigadier.suggestion.SuggestionsBuilder;
++import io.papermc.paper.command.brigadier.argument.CustomArgumentType;
++import org.jetbrains.annotations.Contract;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.Objects;
++import java.util.concurrent.CompletableFuture;
++
++@SuppressWarnings("ClassCanBeRecord")
++public final class EnumArgumentType<T extends Enum<T>> implements CustomArgumentType.Converted<@NotNull T, @NotNull String> {
++    private final Class<T> enumClass;
++
++    @Contract(value = "_ -> new", pure = true)
++    public static <T extends Enum<T>> @NotNull EnumArgumentType<T> fromEnum(Class<T> enumClass) {
++        return new EnumArgumentType<>(enumClass);
++    }
++
++    private EnumArgumentType(Class<T> enumClass) {
++        this.enumClass = enumClass;
++    }
++
++    @Override
++    public @NotNull T convert(@NotNull String nativeType) throws CommandSyntaxException {
++        try {
++            return Enum.valueOf(enumClass, nativeType.toUpperCase());
++        } catch (IllegalArgumentException e) {
++            throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherUnknownArgument().create();
++        }
++    }
++
++    @Override
++    public <S> @NotNull CompletableFuture<Suggestions> listSuggestions(@NotNull CommandContext<S> context, @NotNull SuggestionsBuilder builder) {
++        for (Enum<?> value : enumClass.getEnumConstants()) {
++            String name = value.name().toLowerCase();
++            if (name.startsWith(builder.getRemainingLowerCase())) {
++                builder.suggest(name);
++            }
++        }
++        return builder.buildFuture();
++    }
++
++    @Override
++    public @NotNull ArgumentType<@NotNull String> getNativeType() {
++        return StringArgumentType.word();
++    }
++
++    public Class<T> enumClass() {
++        return enumClass;
++    }
++
++    @Override
++    public boolean equals(Object obj) {
++        if (obj == this) {
++            return true;
++        }
++        if (obj == null || obj.getClass() != this.getClass()) {
++            return false;
++        }
++        EnumArgumentType<?> that = (EnumArgumentType<?>) obj;
++        return Objects.equals(this.enumClass, that.enumClass);
++    }
++
++    @Override
++    public int hashCode() {
++        return Objects.hash(enumClass);
++    }
++
++    @Override
++    public String toString() {
++        return "EnumArgumentType[" +
++            "enumClass=" + enumClass + ']';
++    }
++
++}
+diff --git a/src/main/java/org/leavesmc/leaves/protocol/PcaSyncProtocol.java b/src/main/java/org/leavesmc/leaves/protocol/PcaSyncProtocol.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b757f54c514ec57f00753b047349d009327e3d8a
+--- /dev/null
++++ b/src/main/java/org/leavesmc/leaves/protocol/PcaSyncProtocol.java
+@@ -0,0 +1,475 @@
++package org.leavesmc.leaves.protocol;
++
++import net.minecraft.core.BlockPos;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.network.codec.ByteBufCodecs;
++import net.minecraft.network.codec.StreamCodec;
++import net.minecraft.resources.ResourceLocation;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.entity.player.Player;
++import net.minecraft.world.level.Level;
++import net.minecraft.world.level.block.ChestBlock;
++import net.minecraft.world.level.block.entity.BlockEntity;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.level.block.state.properties.ChestType;
++import org.apache.commons.lang3.tuple.ImmutablePair;
++import org.apache.commons.lang3.tuple.MutablePair;
++import org.apache.commons.lang3.tuple.Pair;
++import org.jetbrains.annotations.Contract;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++import org.leavesmc.leaves.LeavesConfig;
++import org.leavesmc.leaves.LeavesLogger;
++import org.leavesmc.leaves.bot.ServerBot;
++import org.leavesmc.leaves.plugin.MinecraftInternalPlugin;
++import org.leavesmc.leaves.protocol.core.LeavesCustomPayload;
++import org.leavesmc.leaves.protocol.core.LeavesProtocol;
++import org.leavesmc.leaves.protocol.core.ProtocolHandler;
++import org.leavesmc.leaves.protocol.core.ProtocolUtils;
++import org.leavesmc.leaves.util.TagUtil;
++
++import java.util.Map;
++import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.locks.ReentrantLock;
++
++/**
++ * Oneiric - PCA（Player Chest Access）同步协议。
++ *
++ * <p>客户端装有 PCA / Carpet 的 {@code accurateBlockPlacement} 配套 mod 时，
++ * 可以"看"服务端容器的实时内容、实体 NBT。生电玩家用它调试漏斗链、比对箱子库存。</p>
++ *
++ * <h2>移植自 Leaves（GPLv3），做了三处必要改动</h2>
++ *
++ * <ol>
++ *   <li><b>26.x → 1.21.1 API</b>：{@code Identifier} → {@code ResourceLocation}，
++ *       {@code identifier()} → {@code location()}，{@code saveWithoutMetadata} 签名一致。</li>
++ *   <li><b>同步玩家实体的开关</b>：Leaves 是 6 值枚举
++ *       （{@code NOBODY/BOT/OPS/OPS_AND_SELF/EVERYONE}），Oneiric 只有
++ *       {@code protocol-pca-sync-player} 一个布尔。语义映射：<br>
++ *       关 = {@code NOBODY}（不暴露任何玩家实体）；<br>
++ *       开 = {@code OPS_AND_SELF}（只暴露 op 和自己，不把普通玩家的数据广播给别人）。
++ *       之所以不直接给 {@code EVERYONE}，是因为那等于让任何客户端都能读到任意玩家的
++ *       背包与坐标 —— 默认不该这么宽。</li>
++ *   <li><b>Folia 线程适配</b>：Leaves 把处理逻辑丢到
++ *       {@code Bukkit.getGlobalRegionScheduler()}，在 Folia 上那是<b>全局线程</b>，
++ *       而 {@code world.getBlockEntity(pos)} / {@code world.getEntity(id)} 是区域状态。
++ *       改成<b>就地执行</b> —— payload 本来就由发包玩家所在区域线程分发，
++ *       而玩家眼前的容器/实体正是该区域所属。</li>
++ * </ol>
++ */
++@LeavesProtocol.Register(namespace = "pca")
++public class PcaSyncProtocol implements LeavesProtocol {
++
++    public static final String PROTOCOL_ID = "pca";
++
++    /**
++     * Oneiric - 保护四张观察表。
++     *
++     * <p>Leaves 用单个 {@code ReentrantLock(true)}（公平锁）。在 Folia 上这些表会被
++     * <b>多个区域线程</b>同时读写（每个玩家在自己的区域里发起同步），公平锁的排队开销
++     * 在高并发下反而是负担；但改动锁的语义会引入新的正确性风险，所以这里<b>保持原样</b>，
++     * 只把表本身换成并发容器降低锁外访问的可见性问题。</p>
++     */
++    public static final ReentrantLock lock = new ReentrantLock(true);
++    public static final ReentrantLock pairLock = new ReentrantLock(true);
++
++    // send
++    private static final ResourceLocation ENABLE_PCA_SYNC_PROTOCOL = id("enable_pca_sync_protocol");
++    private static final ResourceLocation DISABLE_PCA_SYNC_PROTOCOL = id("disable_pca_sync_protocol");
++
++    // Oneiric - 并发容器：多区域线程读写
++    private static final Map<ServerPlayer, Pair<ResourceLocation, BlockPos>> playerWatchBlockPos = new ConcurrentHashMap<>();
++    private static final Map<ServerPlayer, Pair<ResourceLocation, Entity>> playerWatchEntity = new ConcurrentHashMap<>();
++    private static final Map<Pair<ResourceLocation, BlockPos>, Set<ServerPlayer>> blockPosWatchPlayerSet = new ConcurrentHashMap<>();
++    private static final Map<Pair<ResourceLocation, Entity>, Set<ServerPlayer>> entityWatchPlayerSet = new ConcurrentHashMap<>();
++    private static final MutablePair<ResourceLocation, Entity> ENTITY_PAIR = new MutablePair<>();
++    private static final MutablePair<ResourceLocation, BlockPos> BLOCK_POS_PAIR = new MutablePair<>();
++
++    @Contract("_ -> new")
++    public static ResourceLocation id(String path) {
++        return ResourceLocation.fromNamespaceAndPath(PROTOCOL_ID, path);
++    }
++
++    @ProtocolHandler.PlayerJoin
++    private static void onJoin(ServerPlayer player) {
++        if (LeavesConfig.protocol.pca.enable) {
++            enablePcaSyncProtocol(player);
++        }
++    }
++
++    @ProtocolHandler.BytebufReceiver(key = "cancel_sync_block_entity")
++    private static void cancelSyncBlockEntityHandler(ServerPlayer player, FriendlyByteBuf buf) {
++        clearPlayerWatchBlock(player);
++    }
++
++    @ProtocolHandler.BytebufReceiver(key = "cancel_sync_entity")
++    private static void cancelSyncEntityHandler(ServerPlayer player, FriendlyByteBuf buf) {
++        clearPlayerWatchEntity(player);
++    }
++
++    @ProtocolHandler.PayloadReceiver(payload = SyncBlockEntityPayload.class)
++    private static void syncBlockEntityHandler(ServerPlayer player, SyncBlockEntityPayload payload) {
++        final BlockPos pos = payload.pos;
++        final ServerLevel world = player.serverLevel();
++
++        // Oneiric - 就地执行，不跳全局线程（见类注释第 3 条）
++        {
++            final BlockState blockState = world.getBlockState(pos);
++            clearPlayerWatchData(player);
++
++            BlockEntity blockEntityAdj = null;
++            if (blockState.getBlock() instanceof ChestBlock) {
++                if (blockState.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
++                    final BlockPos posAdj = pos.relative(ChestBlock.getConnectedDirection(blockState));
++                    blockEntityAdj = getBlockEntitySafe(world, posAdj);
++                }
++            }
++
++            if (blockEntityAdj != null) {
++                updateBlockEntity(player, blockEntityAdj);
++            }
++
++            final BlockEntity blockEntity = getBlockEntitySafe(world, pos);
++            if (blockEntity != null) {
++                updateBlockEntity(player, blockEntity);
++            }
++
++            final Pair<ResourceLocation, BlockPos> pair =
++                    new ImmutablePair<>(world.dimension().location(), pos);
++            lock.lock();
++            try {
++                playerWatchBlockPos.put(player, pair);
++                blockPosWatchPlayerSet
++                        .computeIfAbsent(pair, k -> ConcurrentHashMap.newKeySet())
++                        .add(player);
++            } finally {
++                lock.unlock();
++            }
++        }
++    }
++
++    /**
++     * Oneiric - 安全取方块实体。
++     *
++     * <p>{@code world.getChunk(pos).getBlockEntity(pos)} 在区块未加载时会同步加载区块，
++     * 而这里已经在正确的区域线程上，加载是合法的 —— 但仍然要挡异常：
++     * 一个失效的坐标不该让整个包处理崩掉。</p>
++     */
++    @Nullable
++    private static BlockEntity getBlockEntitySafe(final ServerLevel world, final BlockPos pos) {
++        try {
++            return world.getChunk(pos).getBlockEntity(pos);
++        } catch (final Throwable ignored) {
++            return null;
++        }
++    }
++
++    @ProtocolHandler.PayloadReceiver(payload = SyncEntityPayload.class)
++    private static void syncEntityHandler(ServerPlayer player, SyncEntityPayload payload) {
++        final MinecraftServer server = MinecraftServer.getServer();
++        final int entityId = payload.entityId;
++        final ServerLevel world = player.serverLevel();
++
++        // Oneiric - 就地执行（同 syncBlockEntityHandler）
++        {
++            final Entity entity = world.getEntity(entityId);
++
++            if (entity != null) {
++                clearPlayerWatchData(player);
++
++                if (entity instanceof Player) {
++                    // Oneiric - 布尔开关的语义映射：开 = 只允许 op 与自己，关 = 一律不暴露。
++                    // 绝不使用 Leaves 的 EVERYONE：那会让任何客户端读到任意玩家的背包和坐标。
++                    if (!LeavesConfig.protocol.pca.syncPlayerEntity) {
++                        return;
++                    }
++                    final boolean self = entity == player;
++                    final boolean op = server.getPlayerList().isOp(player.getGameProfile());
++                    if (!self && !op) {
++                        return;
++                    }
++                }
++                updateEntity(player, entity);
++
++                final Pair<ResourceLocation, Entity> pair =
++                        new ImmutablePair<>(entity.level().dimension().location(), entity);
++                lock.lock();
++                try {
++                    playerWatchEntity.put(player, pair);
++                    entityWatchPlayerSet
++                            .computeIfAbsent(pair, k -> ConcurrentHashMap.newKeySet())
++                            .add(player);
++                } finally {
++                    lock.unlock();
++                }
++            }
++        }
++    }
++
++    public static void onConfigModify(boolean enable) {
++        if (enable) {
++            enablePcaSyncProtocolGlobal();
++        } else {
++            disablePcaSyncProtocolGlobal();
++        }
++    }
++
++    public static void enablePcaSyncProtocol(@NotNull ServerPlayer player) {
++        ProtocolUtils.sendEmptyPacket(player, ENABLE_PCA_SYNC_PROTOCOL);
++    }
++
++    public static void disablePcaSyncProtocol(@NotNull ServerPlayer player) {
++        ProtocolUtils.sendEmptyPacket(player, DISABLE_PCA_SYNC_PROTOCOL);
++    }
++
++    public static void updateEntity(@NotNull ServerPlayer player, @NotNull Entity entity) {
++        final CompoundTag nbt = TagUtil.saveEntity(entity);
++        ProtocolUtils.sendPayloadPacket(player,
++                new UpdateEntityPayload(entity.level().dimension().location(), entity.getId(), nbt));
++    }
++
++    public static void updateBlockEntity(@NotNull ServerPlayer player, @NotNull BlockEntity blockEntity) {
++        final Level world = blockEntity.getLevel();
++        if (world == null) {
++            return;
++        }
++        ProtocolUtils.sendPayloadPacket(player, new UpdateBlockEntityPayload(
++                world.dimension().location(),
++                blockEntity.getBlockPos(),
++                blockEntity.saveWithoutMetadata(world.registryAccess())));
++    }
++
++    private static MutablePair<ResourceLocation, Entity> getEntityPair(final ResourceLocation dimension,
++                                                                      final Entity entity) {
++        pairLock.lock();
++        try {
++            ENTITY_PAIR.setLeft(dimension);
++            ENTITY_PAIR.setRight(entity);
++            return ENTITY_PAIR;
++        } finally {
++            pairLock.unlock();
++        }
++    }
++
++    private static MutablePair<ResourceLocation, BlockPos> getBlockPosPair(final ResourceLocation dimension,
++                                                                          final BlockPos pos) {
++        pairLock.lock();
++        try {
++            BLOCK_POS_PAIR.setLeft(dimension);
++            BLOCK_POS_PAIR.setRight(pos);
++            return BLOCK_POS_PAIR;
++        } finally {
++            pairLock.unlock();
++        }
++    }
++
++    @Nullable
++    private static Set<ServerPlayer> getWatchPlayerList(@NotNull Entity entity) {
++        return entityWatchPlayerSet.get(getEntityPair(entity.level().dimension().location(), entity));
++    }
++
++    @Nullable
++    private static Set<ServerPlayer> getWatchPlayerList(@NotNull Level world, @NotNull BlockPos blockPos) {
++        return blockPosWatchPlayerSet.get(getBlockPosPair(world.dimension().location(), blockPos));
++    }
++
++    public static boolean syncEntityToClient(@NotNull Entity entity) {
++        if (entity.level().isClientSide()) {
++            return false;
++        }
++        lock.lock();
++        try {
++            final Set<ServerPlayer> playerList = getWatchPlayerList(entity);
++            if (playerList == null || playerList.isEmpty()) {
++                return false;
++            }
++            for (final ServerPlayer player : playerList) {
++                updateEntity(player, entity);
++            }
++            return true;
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    public static boolean syncBlockEntityToClient(@NotNull BlockEntity blockEntity) {
++        final Level world = blockEntity.getLevel();
++        if (world == null || world.isClientSide()) {
++            return false;
++        }
++        final BlockPos pos = blockEntity.getBlockPos();
++        final BlockState blockState = world.getBlockState(pos);
++
++        lock.lock();
++        try {
++            // Oneiric - 不改动共享集合：原来的 playerList.addAll(playerListAdj) 会往
++            // 表里的 Set 塞别的坐标的观察者，导致后续 remove 找不到人 → 内存泄漏。
++            // 这里只做"两个集合的并集遍历"。
++            final Set<ServerPlayer> direct = getWatchPlayerList(world, pos);
++            Set<ServerPlayer> adjacent = null;
++            if (blockState.getBlock() instanceof ChestBlock
++                    && blockState.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
++                final BlockPos posAdj = pos.relative(ChestBlock.getConnectedDirection(blockState));
++                adjacent = getWatchPlayerList(world, posAdj);
++            }
++
++            boolean sent = false;
++            if (direct != null) {
++                for (final ServerPlayer player : direct) {
++                    updateBlockEntity(player, blockEntity);
++                    sent = true;
++                }
++            }
++            if (adjacent != null) {
++                for (final ServerPlayer player : adjacent) {
++                    if (direct != null && direct.contains(player)) {
++                        continue; // 已经发过
++                    }
++                    updateBlockEntity(player, blockEntity);
++                    sent = true;
++                }
++            }
++            return sent;
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    private static void clearPlayerWatchEntity(ServerPlayer player) {
++        lock.lock();
++        try {
++            final Pair<ResourceLocation, Entity> pair = playerWatchEntity.remove(player);
++            if (pair != null) {
++                final Set<ServerPlayer> playerSet = entityWatchPlayerSet.get(pair);
++                if (playerSet != null) {
++                    playerSet.remove(player);
++                    if (playerSet.isEmpty()) {
++                        entityWatchPlayerSet.remove(pair);
++                    }
++                }
++            }
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    private static void clearPlayerWatchBlock(ServerPlayer player) {
++        lock.lock();
++        try {
++            final Pair<ResourceLocation, BlockPos> pair = playerWatchBlockPos.remove(player);
++            if (pair != null) {
++                final Set<ServerPlayer> playerSet = blockPosWatchPlayerSet.get(pair);
++                if (playerSet != null) {
++                    playerSet.remove(player);
++                    if (playerSet.isEmpty()) {
++                        blockPosWatchPlayerSet.remove(pair);
++                    }
++                }
++            }
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    /** Oneiric - 玩家离开时必须清表，否则四张观察表会永久持有已下线的 ServerPlayer。 */
++    @ProtocolHandler.PlayerLeave
++    private static void onLeave(ServerPlayer player) {
++        clearPlayerWatchData(player);
++    }
++
++    public static void disablePcaSyncProtocolGlobal() {
++        lock.lock();
++        try {
++            playerWatchBlockPos.clear();
++            playerWatchEntity.clear();
++            blockPosWatchPlayerSet.clear();
++            entityWatchPlayerSet.clear();
++        } finally {
++            lock.unlock();
++        }
++        final MinecraftServer server = MinecraftServer.getServer();
++        if (server == null) {
++            return;
++        }
++        for (final ServerPlayer player : server.getPlayerList().getPlayers()) {
++            disablePcaSyncProtocol(player);
++        }
++    }
++
++    public static void enablePcaSyncProtocolGlobal() {
++        final MinecraftServer server = MinecraftServer.getServer();
++        if (server == null) {
++            return;
++        }
++        for (final ServerPlayer player : server.getPlayerList().getPlayers()) {
++            enablePcaSyncProtocol(player);
++        }
++    }
++
++    public static void clearPlayerWatchData(ServerPlayer player) {
++        clearPlayerWatchBlock(player);
++        clearPlayerWatchEntity(player);
++    }
++
++    @Override
++    public boolean isActive() {
++        return LeavesConfig.protocol.pca.enable;
++    }
++
++    public record UpdateEntityPayload(ResourceLocation dimension, int entityId,
++                                      CompoundTag tag) implements LeavesCustomPayload {
++
++        @ID
++        public static final ResourceLocation UPDATE_ENTITY = PcaSyncProtocol.id("update_entity");
++
++        @Codec
++        public static final StreamCodec<FriendlyByteBuf, UpdateEntityPayload> CODEC = StreamCodec.composite(
++                ResourceLocation.STREAM_CODEC, UpdateEntityPayload::dimension,
++                ByteBufCodecs.INT, UpdateEntityPayload::entityId,
++                ByteBufCodecs.COMPOUND_TAG, UpdateEntityPayload::tag,
++                UpdateEntityPayload::new
++        );
++    }
++
++    public record UpdateBlockEntityPayload(ResourceLocation dimension, BlockPos blockPos,
++                                           CompoundTag tag) implements LeavesCustomPayload {
++
++        @ID
++        private static final ResourceLocation UPDATE_BLOCK_ENTITY = PcaSyncProtocol.id("update_block_entity");
++
++        @Codec
++        private static final StreamCodec<FriendlyByteBuf, UpdateBlockEntityPayload> CODEC = StreamCodec.composite(
++                ResourceLocation.STREAM_CODEC, UpdateBlockEntityPayload::dimension,
++                BlockPos.STREAM_CODEC, UpdateBlockEntityPayload::blockPos,
++                ByteBufCodecs.COMPOUND_TAG, UpdateBlockEntityPayload::tag,
++                UpdateBlockEntityPayload::new
++        );
++    }
++
++    public record SyncBlockEntityPayload(BlockPos pos) implements LeavesCustomPayload {
++
++        @ID
++        public static final ResourceLocation SYNC_BLOCK_ENTITY = PcaSyncProtocol.id("sync_block_entity");
++
++        @Codec
++        private static final StreamCodec<FriendlyByteBuf, SyncBlockEntityPayload> CODEC =
++                StreamCodec.composite(BlockPos.STREAM_CODEC, SyncBlockEntityPayload::pos,
++                        SyncBlockEntityPayload::new);
++    }
++
++    public record SyncEntityPayload(int entityId) implements LeavesCustomPayload {
++
++        @ID
++        public static final ResourceLocation SYNC_ENTITY = PcaSyncProtocol.id("sync_entity");
++
++        @Codec
++        private static final StreamCodec<FriendlyByteBuf, SyncEntityPayload> CODEC =
++                StreamCodec.composite(ByteBufCodecs.INT, SyncEntityPayload::entityId,
++                        SyncEntityPayload::new);
++    }
++}

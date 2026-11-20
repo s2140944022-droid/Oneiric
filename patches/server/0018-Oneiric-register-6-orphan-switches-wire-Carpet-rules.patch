@@ -1,0 +1,281 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric>
+Date: Fri, 20 Nov 2026 18:24:43 +0800
+Subject: [PATCH] Oneiric: register 6 orphan switches, wire Carpet rules +
+ alternative block placement
+
+
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+index 1d5edaa270ba389d0f796d4479b5ece48f5efcff..4baa40fe468b3a430852406c10efa140a4df92c0 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricConfig.java
+@@ -142,6 +142,21 @@ public final class OneiricConfig {
+             "protocol-servux-litematics",
+             "protocol-syncmatica",
+             "protocol-bladeren",
++            // Oneiric - 这 5 个以前被代码读取但不在本表里，导致 isEnabled() 永远返回 false、
++            // yml 里也写不进去（"改了没反应"且无任何提示）。现在补登记。
++            //   protocol-packet-event    —— 协议包事件（供插件拦截）
++            //   protocol-strict-mode     —— 未知 payload 不静默丢弃
++            //   protocol-pca             —— PCA 同步协议（协议本体未移植，见 yml 说明）
++            //   protocol-pca-sync-player —— PCA 同步玩家实体
++            //   protocol-syncmatica-quota —— Syncmatica 配额限制
++            "protocol-packet-event",
++            "protocol-strict-mode",
++            "protocol-pca",
++            "protocol-pca-sync-player",
++            "protocol-syncmatica-quota",
++            // ReplayMod 摄影师总开关。以前只在 DEFAULT_ON 里、不在 NAMES 里，
++            // 于是恒为 true 且关不掉 —— 现在可以关了。
++            "replay-mod",
+             // ── 生电原版对齐（Leaves 系，从旧树移植）
+             "vanilla-item-tick",
+             "vanilla-hopper",
+diff --git a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+index f1dc7eecaddcd896b603c11afeaaa3d92ccb45bd..44f622047e090bd521bfb80f292a96828be77617 100644
+--- a/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
++++ b/src/main/java/io/papermc/paper/oneiric/OneiricYml.java
+@@ -325,6 +325,29 @@ public final class OneiricYml {
+                 "向 Bladeren 客户端同步服务器 MSPT。",
+                 "纯状态展示。",
+                 "不需要时可关。");
++        block(sb, "protocol-packet-event", false, "协议包事件",
++                "允许插件监听/拦截客户端协议包（触发 Leaves 自定义 payload 事件）。",
++                "默认关：每个协议包都过一次事件分发对高频协议（Jade/Servux）是纯粹的开销，"
++                        + "而没有对应插件监听时它什么也做不了。",
++                "自己写插件要干预协议包时才打开。");
++        block(sb, "protocol-strict-mode", false, "协议严格模式",
++                "收到未注册的 payload 类型时记日志并拒收，而不是静默丢弃。",
++                "默认关：正常客户端会发一些服务端不认识的 channel，严格模式会刷日志。"
++                        + "但这正是排查「客户端 mod 不工作」时需要的信息。",
++                "排查协议握手问题时临时打开。");
++        block(sb, "protocol-pca", false, "PCA 同步协议",
++                "启用 PCA（Player Chest Access）同步协议，允许客户端读取容器内容。",
++                "默认关，且**协议本体尚未移植**：开关已登记，但这一版没有 PcaSyncProtocol 实现，"
++                        + "打开也不会生效。保留开关是为了日后移植时配置项不用再改。",
++                "等协议本体移植后再用；现在打开没有效果。");
++        block(sb, "protocol-pca-sync-player", false, "PCA 同步玩家实体",
++                "PCA 协议的可选项：连玩家实体的数据一起同步。",
++                "依赖 protocol-pca，同样**尚未生效**。",
++                "同上，暂时无需改动。");
++        block(sb, "protocol-syncmatica-quota", false, "Syncmatica 配额限制",
++                "限制每个玩家可提交的投影数量，防止单人塞爆服端存储。",
++                "默认关：小服/信任环境不需要；公开服建议打开。",
++                "开放给不认识的人玩时打开，配合 -Doneiric.syncmatica-quota-limit 设上限。");
+         sb.append('\n');
+         sb.append('\n');
+         sb.append("  # = = = = = = = = = = = = = = = = = [生电原版对齐（Leaves 系移植） ]\n");
+@@ -386,6 +409,17 @@ public final class OneiricYml {
+                 "对应 Carpet 的 hopperCountersUnlimitedSpeed 规则。",
+                 "默认关：它会明显改变吞吐量和时序，只有需要快速计数时打开。");
+ 
++        // ── ReplayMod 摄影师
++        sb.append("\n");
++        sb.append("  # = = = = = = = = = = = = = = = = = [ReplayMod 摄影师 ]\n");
++        sb.append("  # 让一个假玩家替你录制回放，产出标准 .mcpr 文件，可直接用 ReplayMod 打开。\n");
++        sb.append("  # 命令：/photographer create <id> [跟随玩家] | /photographer remove <id> | /photographer list\n");
++        block(sb, "replay-mod", true, "ReplayMod 摄影师",
++                "允许 /photographer 创建录制者：它登录后接收所有世界数据包并写成 .mcpr 回放文件。",
++                "默认开：不创建摄影师时它只是一个空开关，完全不占资源；"
++                        + "生电录像、装置测试复盘都要用它。",
++                "完全不录回放时可关，关掉后 /photographer 全部子命令失效。");
++
+         // ── 假玩家 / Bot（移植自 LeavesMC/Leaves，GPLv3）
+         //
+         // 这一段的 15 项以前只登记在 OneiricConfig.NAMES 里、没有写进 yml：
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+index db51c7a6e721163b83afcf6f67deceb826e9f5e3..549f3a60cd441ea972dd1fc6bd897bb60960aced 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -258,6 +258,15 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+             org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
+                     "[Oneiric] 协议层初始化失败（不影响启动）: {}", t.toString());
+         }
++        // Oneiric - 把已实现的开关登记成 Carpet 规则，让 Carpet 客户端 HUD 能看到当前值。
++        // 必须在协议层 init 之后：规则表与协议类是同一套静态状态。
++        // 以前这里没有调用，于是发给客户端的永远是空规则表。
++        try {
++            org.leavesmc.leaves.LeavesConfig.registerCarpetRules();
++        } catch (final Throwable t) {
++            org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
++                    "[Oneiric] Carpet 规则登记失败（不影响启动）: {}", t.toString());
++        }
+         // Oneiric end
+         // Purpur - Oneiric：初始化 Purpur 主配置（purpur.yml）。
+         // 必须在任何世界创建**之前**：PurpurWorldConfig 在 Level 构造期就会读 PurpurConfig 的静态字段，
+diff --git a/src/main/java/net/minecraft/world/item/BlockItem.java b/src/main/java/net/minecraft/world/item/BlockItem.java
+index 96fb69ec6db2e7c8c728435f0c537b076259b2fb..306c67ac730c4efc6a44a7f7a2a46b3295abcb4e 100644
+--- a/src/main/java/net/minecraft/world/item/BlockItem.java
++++ b/src/main/java/net/minecraft/world/item/BlockItem.java
+@@ -163,6 +163,40 @@ public class BlockItem extends Item {
+     @Nullable
+     protected BlockState getPlacementState(BlockPlaceContext context) {
+         BlockState iblockdata = this.getBlock().getStateForPlacement(context);
++        // Oneiric start - 替代方块放置（Carpet accurateBlockPlacement / Litematica easy place）
++        //
++        // 这两个解码器（CarpetAlternativeBlockPlacement / LitematicaEasyPlaceProtocol）
++        // 一直在源码树里，但**没有任何调用点** —— 等于两份死代码。
++        // 客户端按协议发来编码过的点击坐标，服务端必须在这里反解，否则朝向永远按原版算，
++        // 投影自动建造就会放错方向。
++        switch (org.leavesmc.leaves.LeavesConfig.alternativeBlockPlacement) {
++            case CARPET -> {
++                final BlockState tryState =
++                        org.leavesmc.leaves.protocol.CarpetAlternativeBlockPlacement
++                                .alternativeBlockPlacement(this.getBlock(), context);
++                if (tryState != null) {
++                    iblockdata = tryState;
++                }
++            }
++            case CARPET_FIX -> {
++                final BlockState tryState =
++                        org.leavesmc.leaves.protocol.CarpetAlternativeBlockPlacement
++                                .alternativeBlockPlacementFix(this.getBlock(), context);
++                if (tryState != null) {
++                    iblockdata = tryState;
++                }
++            }
++            case LITEMATICA -> {
++                if (iblockdata != null && this.canPlace(context, iblockdata)) {
++                    return org.leavesmc.leaves.protocol.LitematicaEasyPlaceProtocol
++                            .applyPlacementProtocol(iblockdata, context);
++                }
++            }
++            case NONE -> {
++                // 原版行为
++            }
++        }
++        // Oneiric end
+ 
+         return iblockdata != null && this.canPlace(context, iblockdata) ? iblockdata : null;
+     }
+diff --git a/src/main/java/org/leavesmc/leaves/LeavesConfig.java b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+index ad2a41eb3197196e094c414d1a8804f2632dd267..cd207bad256e29adb89b7de96269696aaa6f7a3a 100644
+--- a/src/main/java/org/leavesmc/leaves/LeavesConfig.java
++++ b/src/main/java/org/leavesmc/leaves/LeavesConfig.java
+@@ -253,6 +253,62 @@ public class LeavesConfig {
+         }
+     }
+ 
++    /**
++     * Oneiric - 把已实现的开关登记成 Carpet 规则，让 Carpet 客户端 HUD 能显示它们的当前值。
++     *
++     * <h2>为什么需要</h2>
++     *
++     * <p>{@code CarpetServerProtocol} 早就实现了规则同步通道（{@code Rules} NBT），
++     * 但**没有任何地方调用 {@code CarpetRules.register(...)}**，所以发给客户端的
++     * 永远是一张空表 —— 玩家装了 Carpet 也看不到服务器开了哪些规则。</p>
++     *
++     * <h2>只登记真的实现了的</h2>
++     *
++     * <p>这里刻意只列「有对应服务端实现」的规则。把没实现的也写进去，玩家会在 HUD 上
++     * 看到一个开着却没有任何行为的规则 —— 那比看不到更糟。</p>
++     *
++     * <p>规则名沿用 Carpet 的原名（{@code renewableCoral} 等），这样 Carpet 客户端
++     * 才能按名字匹配上；管理侧标识统一用 {@code carpet} 或 {@code pca}，与 Leaves 一致。</p>
++     */
++    public static void registerCarpetRules() {
++        registerOne("carpet", "renewableCoral", modify.oldMC.renewableCoral);
++        registerOne("carpet", "renewableCoralExpand", modify.oldMC.renewableCoralExpanded);
++        registerOne("carpet", "redstoneIgnoreUpwardsUpdate", modify.oldMC.updater.redstoneIgnoreUpwardsUpdate);
++        registerOne("carpet", "instantBlockUpdaterReintroduced", modify.oldMC.updater.instantBlockUpdaterReintroduced);
++        registerOne("carpet", "cceUpdateSuppression", modify.oldMC.updater.cceUpdateSuppression);
++        registerOne("carpet", "soundUpdateSuppression", modify.oldMC.updater.soundUpdateSuppression);
++        registerOne("carpet", "movableBuddingAmethyst", modify.movableBuddingAmethyst);
++        registerOne("carpet", "shearsWrench", modify.redstoneShearsWrench);
++        registerOne("carpet", "flattenTriangularDistribution", modify.flattenTriangularDistribution);
++        registerOne("carpet", "hopperCounters", modify.hopperCounter.enable);
++        registerOne("carpet", "hopperCountersUnlimitedSpeed", modify.hopperCounter.unlimitedSpeed);
++        registerOne("carpet", "optimizedDragonRespawn", modify.optimizedDragonRespawn);
++        registerOne("carpet", "spiderJockeysDropGapples", modify.spiderJockeysDropGapples > 0.0D);
++        registerOne("pca", "avoidAnvilTooExpensive", modify.avoidAnvilTooExpensive);
++        registerOne("pca", "sharedVillagerDiscounts", modify.sharedVillagerDiscounts);
++        registerOne("carpet", "zeroTickPlants", modify.oldMC.zeroTickPlants);
++        registerOne("carpet", "renewableDeepslate", modify.oldMC.renewableDeepslate);
++        registerOne("carpet", "renewableSponges", modify.oldMC.renewableSponges);
++        registerOne("carpet", "crafter1gt", modify.oldMC.crafter1gt);
++        registerOne("carpet", "copperBulb1gt", modify.oldMC.copperBulb1gt);
++        registerOne("carpet", "oldZombieReinforcement", modify.oldMC.oldZombieReinforcement);
++        registerOne("carpet", "oldRaidBehavior", modify.oldMC.oldRaidBehavior);
++        registerOne("carpet", "oldMinecartMotion", modify.oldMC.oldMinecartMotionBehavior);
++        registerOne("carpet", "tntWetExplosionNoItemDamage", modify.oldMC.tntWetExplosionNoItemDamage);
++        registerOne("carpet", "keepLeashConnectWhenUseFirework", modify.oldMC.keepLeashConnectWhenUseFirework);
++        registerOne("carpet", "allowInfNanMotionValues", modify.oldMC.allowInfNanMotionValues);
++        registerOne("carpet", "spawnInvulnerableTime", modify.oldMC.spawnInvulnerableTime);
++        registerOne("carpet", "spectatorDontGetAdvancement", modify.spectatorDontGetAdvancement);
++        registerOne("carpet", "stickChangeArmorStandArmStatus", modify.stickChangeArmorStandArmStatus);
++        registerOne("carpet", "snowballAndEggCanKnockback", modify.snowballAndEggCanKnockback);
++        registerOne("carpet", "disableVaultBlacklist", modify.oldMC.disableVaultBlacklist);
++    }
++
++    private static void registerOne(final String manager, final String carpetName, final boolean value) {
++        org.leavesmc.leaves.protocol.CarpetServerProtocol.CarpetRules.register(
++                org.leavesmc.leaves.protocol.CarpetServerProtocol.CarpetRule.of(manager, carpetName, value));
++    }
++
+     /** 羊毛漏斗计数器。 */
+     public static final class HopperCounter {
+         /** 总开关：是否允许羊毛漏斗计数器工作。 */
+@@ -311,6 +367,44 @@ public class LeavesConfig {
+         public final boolean syncPlayerEntity = enabled("protocol-pca-sync-player");
+     }
+ 
++    /**
++     * Oneiric - 替代方块放置（Carpet / Litematica 协议）。
++     *
++     * <p>原版放置方块时朝向由客户端"看哪里"决定；Carpet 的 accurateBlockPlacement 与
++     * Litematica 的 easy place 都是把目标状态编码进点击坐标的偏移里（协议层），
++     * 服务端要按那个偏移反推出正确朝向。{@link #type} 选择用哪套解码。</p>
++     *
++     * <p>这个配置项以前**整个缺失**：{@code CarpetAlternativeBlockPlacement} 与
++     * {@code LitematicaEasyPlaceProtocol} 两个类都在源码树里，但没有任何调用点，
++     * 等于两份死代码。补上这个开关后它们才真正生效。</p>
++     */
++    public enum AlternativePlaceType {
++        /** 关闭。 */
++        NONE,
++        /** Carpet 的 accurateBlockPlacement。 */
++        CARPET,
++        /** Carpet 的修正版（处理更多元件）。 */
++        CARPET_FIX,
++        /** Litematica 的 easy place。 */
++        LITEMATICA
++    }
++
++    /** 当前启用的替代放置模式。用 -Doneiric.alternative-block-placement=CARPET 等方式设置。 */
++    public static final AlternativePlaceType alternativeBlockPlacement = parsePlaceType(
++            OneiricConfig.stringValue("alternative-block-placement", "NONE"));
++
++    private static AlternativePlaceType parsePlaceType(final String raw) {
++        try {
++            return AlternativePlaceType.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT));
++        } catch (final IllegalArgumentException malformed) {
++            org.apache.logging.log4j.LogManager.getLogger("Oneiric").warn(
++                    "[Oneiric] oneiric.alternative-block-placement 不是合法值（{}），"
++                            + "可选 NONE/CARPET/CARPET_FIX/LITEMATICA，已按 NONE 处理", raw);
++            return AlternativePlaceType.NONE;
++        }
++    }
++
++
+     public static final class Servux {
+         public final boolean hudLoggerProtocol = enabled("protocol-servux-hud-logger");
+         public final boolean hudMetadataProtocol = enabled("protocol-servux-hud-metadata");
+diff --git a/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+index 22a47fca14fef35b91bee66d8686a1b29c9be510..bb9f48ac1f1698eda20232f4c3056d6437bde410 100644
+--- a/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
++++ b/src/main/java/org/leavesmc/leaves/command/PhotographerCommand.java
+@@ -52,6 +52,14 @@ public final class PhotographerCommand extends Command {
+             return true;
+         }
+ 
++        // Oneiric - 总开关检查。以前这里没有判断，导致 replay-mod 关了也能用；
++        // 而 replay-mod 本身又不在 NAMES 里，等于这个开关两头都失效。
++        if (!org.leavesmc.leaves.LeavesConfig.replayMod.enable) {
++            sender.sendMessage(Component.text(
++                    "ReplayMod 摄影师功能已关闭（oneiric.yml 里的 replay-mod: false）", NamedTextColor.RED));
++            return true;
++        }
++
+         if (args.length == 0) {
+             sender.sendMessage(Component.text(this.getUsage(), NamedTextColor.GRAY));
+             return true;

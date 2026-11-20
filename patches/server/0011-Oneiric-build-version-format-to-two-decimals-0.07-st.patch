@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fuchen <fuchen@oneiric.local>
+Date: Fri, 20 Nov 2026 03:20:49 +0800
+Subject: [PATCH] Oneiric: build version format to two decimals (0.07, step
+ +0.01/build)
+
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 2a91349d78f48d285e3b850bda23a6076d5d2bb4..31de09b30cfdd169d87faabec588bb02da3af252 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -100,7 +100,7 @@ tasks.jar {
+             .readText().trim().toLongOrNull() ?: 0L
+         // Oneiric - 不用 String.format("%,.3f")：Kotlin DSL 里 "java.util.Locale" 会被
+         // 项目的 java 扩展遮蔽（根脚本就在这上面栽过一次），手动拼更稳。
+-        val buildVersion = "${buildCounter / 1000}.${(buildCounter % 1000).toString().padStart(3, '0')}"
++        val buildVersion = "${buildCounter / 100}.${(buildCounter % 100).toString().padStart(2, '0')}"
+         val implementationVersion = "$mcVersion-${build ?: "DEV"}-$gitHash+b$buildVersion"
+         val date = git("show", "-s", "--format=%ci", gitHash).getText().trim() // Paper
+         val gitBranch = git("rev-parse", "--abbrev-ref", "HEAD").getText().trim() // Paper
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index 6e59bf25d84045c8d8069eca8671a8afef12614d..492629c05cdff71631795b2d77dbfa0a810f5b0a 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -92,11 +92,11 @@ public record ServerBuildInfoImpl(
+         if (hasGitCommit) {
+             sb.append(this.gitCommit.get());
+         }
+-        // Oneiric start - 显示自动小版本号（每次打包 +0.001）。
+-        // 0.000 说明该 jar 没盖过版本章（例如手工重打包），此时不显示，避免误导。
++        // Oneiric start - 显示自动小版本号（每次打包 +0.01）。
++        // 0.00 说明该 jar 没盖过版本章（例如手工重打包），此时不显示，避免误导。
+         if (representation == StringRepresentation.VERSION_FULL
+             && !this.oneiricBuildVersion.isEmpty()
+-            && !"0.000".equals(this.oneiricBuildVersion)) {
++            && !"0.00".equals(this.oneiricBuildVersion)) {
+             sb.append("+b").append(this.oneiricBuildVersion);
+         }
+         // Oneiric end - 自动小版本号
