@@ -365,17 +365,36 @@ Oneiric 是把两边接起来的那个。
 
 ### 命令
 
+**必须按这个顺序执行。** 跳过第一步会导致 `100 个错误`（`org.bukkit.*` 找不到），
+因为 `createMojmapPaperclipJar` **不会**自动生成 API 层。
+
 ```bash
-# 首次或补丁变更后
+# 1. 生成 API 层（首次或 API 补丁变更后）—— 不能跳过
+./gradlew applyApiPatches
+
+# 2. 生成服务端层（首次或服务端补丁变更后）
 ./gradlew applyServerPatches
 
-# 构建（产物：build/libs/Oneiric-V*.jar）
+# 3. 构建（产物：build/libs/Oneiric-V*.jar）
 ./gradlew createMojmapPaperclipJar
 ```
 
 Windows 上把 `./gradlew` 换成 `gradlew.bat`。
 
+首次构建需要从 GitHub 拉取 Folia / Paper / Luminol 上游并反编译，
+**约 45 分钟**（视网络与磁盘）。之后增量构建约 2 分钟。
+
 产物是 `Oneiric-V0.xx.jar`，版本号每次打包自动 +0.01。
+
+### 为什么第 1 步不能省
+
+`oneiric-server` 模块依赖 `project(":luminol-api")`，而 API 源码是
+`applyApiPatches` 生成的。只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的
+（或只有 2 个文件），编译服务端时 `org.bukkit.Bukkit`、`org.purpurmc.purpur.*`
+全部找不到 —— 报错会显示成上百行"程序包不存在"。
+
+这个坑在开发时不容易发现：本地目录可能早就手工生成过 API，看起来"能编译"，
+但别人 clone 下来就必然失败。
 
 ---
 

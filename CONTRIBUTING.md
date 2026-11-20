@@ -28,9 +28,15 @@ Oneiric/
 ## 二、改代码的完整流程
 
 ```bash
-# 1. 生成源码树（首次或补丁变更后必须执行）
-./gradlew applyServerPatches
+# 1. 生成源码树（首次必须两步都执行）
+./gradlew applyApiPatches       # API 层
+./gradlew applyServerPatches    # 服务端层
+```
 
+**`applyApiPatches` 不能跳过。** 只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的，
+编译服务端会报上百行 `org.bukkit.*` 找不到。
+
+```bash
 # 2. 在生成树里改代码
 cd Oneiric-Server
 # ……编辑 src/main/java/...
@@ -50,6 +56,27 @@ cd ..
 # 6. 编译验证
 ./gradlew createMojmapPaperclipJar
 ```
+
+### 如果你改的是 API 层
+
+流程一样，但目标换成 `Oneiric-API`：
+
+```bash
+cd Oneiric-API
+git add -A && git commit -m "..."
+cd ..
+./gradlew rebuildApiPatches
+# 输出：Saved modified patches (N/M) for Oneiric-API to patches\api/
+```
+
+**这一条特别重要**：API 层的改动如果没走 `rebuildApiPatches`，
+本地因为生成树里有文件所以能编译，但补丁里没有 ——
+别人 clone 下来必然构建失败。
+
+2026-11-20 就踩过这个坑：`org.purpurmc.purpur.*` 那 21 个类 +
+33 个接口修改，全部只存在于本地生成树，`patches/api/` 是空的。
+清理后从干净副本构建，直接报 100 个错误。
+
 
 ### 第 3 步最容易出错
 
