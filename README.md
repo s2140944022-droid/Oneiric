@@ -361,6 +361,10 @@ Oneiric 是把两边接起来的那个。
 - **JDK 21**（必需）
 - **Git**，且 `git` 必须是**可直接执行的二进制**（不能是 `.cmd` 包装脚本），
   paperweight 会用 `ProcessBuilder` 调用它
+- **必须在 git 仓库里构建**。构建脚本会把 commit hash 写进 jar 的 manifest，
+  没有 `.git` 会报 `git rev-parse --short=7 HEAD` 失败。
+  正常 `git clone` 下来的目录满足这个条件；如果你把源码打包成 zip 传给别人，
+  对方需要先 `git init && git add -A && git commit` 才能构建
 - 建议 8 GB 以上内存（构建期 Gradle 需要 3 GB）
 
 ### 命令
