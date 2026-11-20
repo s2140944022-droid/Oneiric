@@ -28,13 +28,20 @@ Oneiric/
 ## 二、改代码的完整流程
 
 ```bash
-# 1. 生成源码树（首次必须两步都执行）
-./gradlew applyApiPatches       # API 层
-./gradlew applyServerPatches    # 服务端层
+# 1. 生成源码树（首次必须三步都执行，顺序不能变）
+./gradlew applyGeneratedApiPatches   # API 自动生成源（VanillaGoal / registry keys）
+./gradlew applyApiPatches            # API 层
+./gradlew applyServerPatches         # 服务端层
 ```
 
-**`applyApiPatches` 不能跳过。** 只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的，
-编译服务端会报上百行 `org.bukkit.*` 找不到。
+**这三个都不能跳过。**
+
+- 少了 `applyGeneratedApiPatches`：`paper-api-generator/generated/` 不存在，
+  `PaperVanillaGoal` 找不到 `VanillaGoal`，8 个 `@Override` 报错
+- 少了 `applyApiPatches`：`Oneiric-API/` 是空的，编译报上百行 `org.bukkit.*` 找不到
+
+这两个坑的共同点是：本地目录早就生成过这些文件，看起来能编译，
+但别人 clone 下来必然失败。
 
 ```bash
 # 2. 在生成树里改代码

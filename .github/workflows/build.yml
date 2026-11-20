@@ -39,9 +39,14 @@ jobs:
           git config --global user.email "ci@github-actions"
           git config --global user.name "Oneiric CI"
 
-      # 关键：applyApiPatches 不能跳过。
-      # 只跑 applyServerPatches 时 Oneiric-API/ 是空的，
-      # 编译服务端会报上百行 "package org.bukkit does not exist"。
+      # 三步都不能跳过（顺序也不能变）：
+      #   1. applyGeneratedApiPatches —— 生成 paper-api-generator/generated/
+      #      （VanillaGoal / registry keys），不跑会报 8 个 @Override 错误
+      #   2. applyApiPatches —— 生成 Oneiric-API，不跑会报上百行 package 不存在
+      #   3. applyServerPatches —— 应用 19 个服务端补丁
+      - name: Apply generated API patches
+        run: ./gradlew applyGeneratedApiPatches --stacktrace
+
       - name: Apply API patches
         run: ./gradlew applyApiPatches --stacktrace
 

@@ -10,6 +10,71 @@
 
 ---
 
+## 开源整理（2026-11-20）
+
+从"本地能编译"到"别人 clone 也能编译"，一共发现并修了 **3 个「生成产物当源码」的坑**。
+它们有同一个特征：**开发机上文件早就生成过，看起来一切正常；干净 clone 后必然失败。**
+
+### 坑 1：`patches/api/` 完全为空
+
+API 层有 58 个文件块的改动（21 个 `org.purpurmc.purpur.*` 类、`io/oneiric`、
+`com/mohistmc`、33 个接口新增），但**全部没有进补丁**。
+
+修：把 `Oneiric-API` 的改动 commit 后 `rebuildApiPatches`，
+生成 `patches/api/0001-*.patch`（132 KB / 3625 行）。
+
+不做这一步的表现：`org.bukkit.Bukkit`、`org.purpurmc.purpur.*`
+全部找不到，编译报上百行"程序包不存在"。
+
+### 坑 2：`applyApiPatches` 不是自动的
+
+`createMojmapPaperclipJar` **不会**触发 `applyApiPatches`。
+只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的，同样报上百行错误。
+
+修：README / CONTRIBUTING / CI 全部改成**显式三步**。
+
+### 坑 3：`paper-api-generator/generated/` 从没被生成
+
+`Oneiric-API/build.gradle.kts:83-92` 把这个目录当作**额外源码目录**：
+
+```kotlin
+val generatedApiPath = rootProject.projectDir.toPath().resolve("paper-api-generator/generated")
+generatedSources.srcDir(generatedApiPath)
+```
+
+里面是 24 个自动生成类，包括 `VanillaGoal`（Paper 的 mob goal API）和
+`BlockTypeKeys` / `ItemTypeKeys` 这些注册表键。
+
+生成它的是 `applyGeneratedApiPatches` 任务，而 **`applyApiPatches` 不依赖它**。
+干净 clone 时这个目录根本不存在 → `PaperVanillaGoal` 找不到 `VanillaGoal` →
+7 个 `@Override` 连带报错，共 8 个错误。
+
+修：在构建流程里加上 `applyGeneratedApiPatches` 作为第 0 步。
+
+> 注：`patches/generatedApi/` 保持为空是正确的 —— 越位检查确认这 24 个文件
+> 与上游 Paper 内容完全一致（只差 CRLF），没有任何自定义修改，
+> 所以任务是"从上游复制 + 应用空补丁"，不需要自建补丁。
+
+### 验证
+
+```
+applyGeneratedApiPatches   BUILD SUCCESSFUL
+applyApiPatches            1 patches applied cleanly to Oneiric-API
+applyServerPatches         19 patches applied cleanly to Oneiric-Server
+createMojmapPaperclipJar   BUILD SUCCESSFUL  →  Oneiric-V0.16.jar (55.1 MB)
+```
+
+**正确的构建顺序（四步，缺一不可）**：
+
+```bash
+./gradlew applyGeneratedApiPatches   # 生成 API 自动生成源
+./gradlew applyApiPatches            # 生成 Oneiric-API
+./gradlew applyServerPatches         # 应用 19 个服务端补丁
+./gradlew createMojmapPaperclipJar   # 打包
+```
+
+---
+
 ## V0.14 — 2026-11-20 19:22
 
 **补齐空壳 API、接通诊断字段、移植 PCA 协议、采用 Leaves 命令框架。**

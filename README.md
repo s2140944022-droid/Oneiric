@@ -373,10 +373,13 @@ Oneiric 是把两边接起来的那个。
 因为 `createMojmapPaperclipJar` **不会**自动生成 API 层。
 
 ```bash
-# 1. 生成 API 层（首次或 API 补丁变更后）—— 不能跳过
+# 0. 生成 API 自动生成源（VanillaGoal / registry keys）—— 不能跳过
+./gradlew applyGeneratedApiPatches
+
+# 1. 生成 API 层
 ./gradlew applyApiPatches
 
-# 2. 生成服务端层（首次或服务端补丁变更后）
+# 2. 生成服务端层
 ./gradlew applyServerPatches
 
 # 3. 构建（产物：build/libs/Oneiric-V*.jar）
@@ -390,15 +393,24 @@ Windows 上把 `./gradlew` 换成 `gradlew.bat`。
 
 产物是 `Oneiric-V0.xx.jar`，版本号每次打包自动 +0.01。
 
-### 为什么第 1 步不能省
+### 为什么第 0、1 步都不能省
 
-`oneiric-server` 模块依赖 `project(":luminol-api")`，而 API 源码是
-`applyApiPatches` 生成的。只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的
-（或只有 2 个文件），编译服务端时 `org.bukkit.Bukkit`、`org.purpurmc.purpur.*`
-全部找不到 —— 报错会显示成上百行"程序包不存在"。
+**第 0 步（`applyGeneratedApiPatches`）**：`Oneiric-API/build.gradle.kts` 把
+`paper-api-generator/generated/` 当作**额外源码目录**参与编译
+（`srcDir(generatedApiPath)`）。这个目录里是 24 个自动生成类，包括
+`VanillaGoal`（Paper 的 mob goal API）和 `BlockTypeKeys` / `ItemTypeKeys`
+这类注册表键。
 
-这个坑在开发时不容易发现：本地目录可能早就手工生成过 API，看起来"能编译"，
-但别人 clone 下来就必然失败。
+不跑这一步，目录不存在 → `PaperVanillaGoal` 找不到 `VanillaGoal` →
+`@Override` 全部报错，共 8 个错误。
+
+**第 1 步（`applyApiPatches`）**：`oneiric-server` 依赖 `project(":luminol-api")`。
+只跑 `applyServerPatches` 时 `Oneiric-API/` 是空的（或只有 2 个文件），
+编译服务端时 `org.bukkit.Bukkit`、`org.purpurmc.purpur.*` 全部找不到 ——
+报错会显示成上百行"程序包不存在"。
+
+这两个坑在开发时都不容易发现：本地目录早就生成过这些文件，看起来"能编译"，
+但别人 clone 下来必然失败。
 
 ---
 
